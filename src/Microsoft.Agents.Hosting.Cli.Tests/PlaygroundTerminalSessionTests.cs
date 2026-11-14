@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Agents.Hosting.Cli.Core.Operations;
 using Microsoft.Agents.Hosting.Cli.Core.Playground;
@@ -12,6 +13,41 @@ namespace Microsoft.Agents.Hosting.Cli.Tests;
 
 public sealed class PlaygroundTerminalSessionTests
 {
+    [Fact]
+    public async Task RunAsync_ChildEntryPointRecognizesGeneratedPipeName()
+    {
+        Task<PlaygroundProcessResult>? childTask = null;
+        var launcher = new PlaygroundTerminalSession(
+            pipe => childTask = new PlaygroundProcessRunner().RunAsync(
+                new PlaygroundProcessRequest
+                {
+                    ExecutablePath = Path.GetFullPath(Path.Combine(
+                        RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", "..",
+                        OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet")),
+                    Arguments =
+                    [
+                        typeof(Program).Assembly.Location,
+                        PlaygroundTerminalSession.ChildOption,
+                        pipe,
+                    ],
+                    Timeout = TimeSpan.FromSeconds(15),
+                },
+                CancellationToken.None),
+            TimeSpan.FromSeconds(10));
+        var missingExecutable = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "missing-node");
+        var tool = new PlaygroundTool(
+            missingExecutable, [], missingExecutable, PlaygroundVersion.Parse("0.2.29"));
+
+        await Assert.ThrowsAsync<PlaygroundLaunchException>(() =>
+            launcher.RunAsync(tool, new PlaygroundConnection.DirectLine(),
+                () => Assert.Fail("A nonexistent executable must not start."), CancellationToken.None));
+
+        Assert.NotNull(childTask);
+        var child = await childTask;
+        Assert.Equal(1, child.ExitCode);
+        Assert.DoesNotContain("Unrecognized command", child.StandardError, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task RunAsync_PipeFitsMacOsTemporaryDirectorySocketLimit()
     {
