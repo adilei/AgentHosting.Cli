@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using Microsoft.Agents.Hosting.Cli.Core.Operations;
 using Microsoft.Agents.Hosting.Cli.Core.Playground;
 using Microsoft.Agents.Hosting.Cli.Hosting;
@@ -11,6 +12,26 @@ namespace Microsoft.Agents.Hosting.Cli.Tests;
 
 public sealed class PlaygroundTerminalSessionTests
 {
+    [Fact]
+    public async Task RunAsync_PipeFitsMacOsTemporaryDirectorySocketLimit()
+    {
+        Task<int>? childTask = null;
+        var launcher = new PlaygroundTerminalSession(
+            pipe =>
+            {
+                var socketPath = $"/var/folders/ab/0123456789abcdef0123456789abcde/T/CoreFxPipe_{pipe}";
+                Assert.InRange(Encoding.UTF8.GetByteCount(socketPath), 1, 104);
+                childTask = PlaygroundTerminalSession.RunChildAsync(
+                    pipe, new HoldingLauncher { ExitCode = 0 }, CancellationToken.None);
+            },
+            TimeSpan.FromSeconds(10));
+
+        Assert.Equal(0, await launcher.RunAsync(
+            Tool(), new PlaygroundConnection.DirectLine(), () => { }, CancellationToken.None));
+        Assert.NotNull(childTask);
+        Assert.Equal(0, await childTask.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
+
     [Theory]
     [InlineData(false, 0, false)]
     [InlineData(false, 1, true)]

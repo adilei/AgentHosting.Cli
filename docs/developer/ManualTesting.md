@@ -105,6 +105,9 @@ Readiness is established immediately when the process starts.
 The package owns authentication timing; process start is not proof of
 authentication or a connected conversation.
 
+On macOS, validate startup with the default per-user temporary directory. The
+terminal handoff's Unix-domain socket path must fit the platform's 104-byte limit.
+
 The process receives a scrubbed Playground environment, including the selected
 `PATH` and TLS certificate settings. Child-owned disposable configuration paths
 take precedence over caller overrides.

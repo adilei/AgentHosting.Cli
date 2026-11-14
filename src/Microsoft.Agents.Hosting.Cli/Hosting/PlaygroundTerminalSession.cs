@@ -48,7 +48,7 @@ internal sealed class PlaygroundTerminalSession : IPlaygroundLauncher
         var launchPlan = PlaygroundLauncher.BuildLaunchPlan(
             tool, connection, inheritedEnvironment: _inheritedEnvironment);
         cancellationToken.ThrowIfCancellationRequested();
-        var pipeName = $"msagent-playground-{Guid.NewGuid():N}";
+        var pipeName = $"mspg-{Guid.NewGuid():N}";
         using var pipe = new NamedPipeServerStream(
             pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
