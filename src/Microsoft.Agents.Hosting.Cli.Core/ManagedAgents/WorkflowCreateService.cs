@@ -17,6 +17,7 @@ public sealed class WorkflowCreateService
     private readonly AgentConfigLocator _locator;
     private readonly ManagedAgentPrincipalResolver _principals;
     private readonly IWorkflowWorkspacePort _workspace;
+    private readonly ManagedAgentRegistration _registration;
 
     /// <summary>Creates the service.</summary>
     /// <param name="environmentResolver">Resolves the environments the record and clone source belong to.</param>
@@ -37,6 +38,7 @@ public sealed class WorkflowCreateService
         _locator = locator ?? throw new ArgumentNullException(nameof(locator));
         _principals = principals ?? throw new ArgumentNullException(nameof(principals));
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _registration = new ManagedAgentRegistration(_agents, _locator);
     }
 
     /// <summary>Creates a workflow record, scaffolding the files or cloning them from an environment.</summary>
@@ -66,7 +68,7 @@ public sealed class WorkflowCreateService
 
         var displayName = request.Name.Trim();
 
-        RequireValidName(displayName);
+        WorkflowRegistrationGuard.RequireValidName(_scaffold, displayName);
 
         var environment = await _environmentResolver.ResolveAsync(request.EnvironmentId, cancellationToken).ConfigureAwait(false);
         environment = await _principals.BindUserAsync(environment, cancellationToken).ConfigureAwait(false);
@@ -77,7 +79,7 @@ public sealed class WorkflowCreateService
 
         var createdFiles = ProjectRelative(folderName, _scaffold.Scaffold(workspaceRoot, displayName, workflowId));
         _workflows.WriteConnectionReferenceDeclaration(workspaceRoot);
-        var stored = Register(projectDirectory, displayName, request.Description, folderName, environment, workflowId, await _principals.ResolveAsync(environment, cancellationToken).ConfigureAwait(false));
+        var stored = _registration.RegisterWorkflow(projectDirectory, displayName, request.Description, folderName, environment.TenantId, environment.EnvironmentId, await _principals.ResolveAsync(environment, cancellationToken).ConfigureAwait(false), workflowId);
 
         return new ManagedAgentCreateResult
         {
@@ -99,11 +101,7 @@ public sealed class WorkflowCreateService
 
     private async Task<ManagedAgentCreateResult> CloneAsync(ManagedAgentCreateRequest request, CancellationToken cancellationToken)
     {
-        if (!Guid.TryParse(request.CloneWorkflowId!.Trim(), out var workflowId) || workflowId == Guid.Empty)
-        {
-            throw new UsageException($"--mcs-clone-workflow-id '{request.CloneWorkflowId}' is not a workflow id.");
-        }
-
+        var workflowId = WorkflowRegistrationGuard.ParseCloneWorkflowId(request.CloneWorkflowId!);
         var source = await _environmentResolver.ResolveAsync(request.CloneEnvironmentId ?? request.EnvironmentId, cancellationToken).ConfigureAwait(false);
         var target = string.IsNullOrWhiteSpace(request.EnvironmentId) ? source : await _environmentResolver.ResolveForContextAsync(source.Context!, request.EnvironmentId, cancellationToken).ConfigureAwait(false);
         target = await _principals.BindUserAsync(target, cancellationToken).ConfigureAwait(false);
@@ -113,7 +111,7 @@ public sealed class WorkflowCreateService
 
         var displayName = string.IsNullOrWhiteSpace(request.Name) ? remote.Name : request.Name.Trim();
 
-        RequireValidName(displayName);
+        WorkflowRegistrationGuard.RequireValidName(_scaffold, displayName);
 
         var projectDirectory = PrepareProjectDirectory(request.Project);
 
@@ -123,7 +121,7 @@ public sealed class WorkflowCreateService
         var workspaceRoot = PrepareWorkspaceRoot(projectDirectory, displayName, folderName);
 
         var downloaded = await _workflows.DownloadAsync(source, workflowId, workspaceRoot, cancellationToken).ConfigureAwait(false);
-        var stored = Register(projectDirectory, displayName, request.Description ?? remote.Description, folderName, target, workflowId, await _principals.ResolveAsync(target, cancellationToken).ConfigureAwait(false));
+        var stored = _registration.RegisterWorkflow(projectDirectory, displayName, request.Description ?? remote.Description, folderName, target.TenantId, target.EnvironmentId, await _principals.ResolveAsync(target, cancellationToken).ConfigureAwait(false), workflowId);
         var deployment = _homeDeployments.Register(projectDirectory, stored, target.EnvironmentId);
 
         return new ManagedAgentCreateResult
@@ -156,20 +154,9 @@ public sealed class WorkflowCreateService
         return projectDirectory;
     }
 
-    private void RequireValidName(string displayName)
-    {
-        if (_scaffold.ValidateName(displayName) is { } reason)
-        {
-            throw ManagedAgentException.WorkflowNameInvalid(reason);
-        }
-    }
-
     private string PrepareWorkspaceRoot(string projectDirectory, string displayName, string folderName)
     {
-        if (_agents.List(projectDirectory).FirstOrDefault(agent => string.Equals(agent.DisplayName, displayName, StringComparison.OrdinalIgnoreCase)) is { } duplicate)
-        {
-            throw ManagedAgentException.AlreadyRegistered(duplicate.DisplayName, duplicate.AgentId, _locator.ConfigFilePath(projectDirectory));
-        }
+        _registration.RequireNameIsFree(projectDirectory, displayName);
 
         var workspaceRoot = Path.Combine(projectDirectory, folderName);
 
@@ -198,22 +185,4 @@ public sealed class WorkflowCreateService
     /// <returns>The same files, relative to the project directory.</returns>
     private static IReadOnlyList<string> ProjectRelative(string folderName, IReadOnlyList<string> workspaceRelativeFiles) =>
         [.. workspaceRelativeFiles.Select(file => $"{folderName}/{file.Replace('\\', '/')}")];
-
-    private ManagedAgentRecord Register(string projectDirectory, string displayName, string? description, string agentLocation, CopilotEnvironmentContext environment, Guid workflowId, PrincipalReference? caller) =>
-        _agents.Add(projectDirectory, new ManagedAgentRecord
-        {
-            AgentId = Guid.NewGuid().ToString(),
-            DisplayName = displayName,
-            Description = string.IsNullOrWhiteSpace(description) ? null : description.Trim(),
-            AgentType = AgentTypes.McsWorkflow,
-            AgentLocation = agentLocation,
-            McsWorkflowId = workflowId.ToString(),
-            TenantId = environment.TenantId,
-            EnvironmentId = environment.EnvironmentId,
-            Origin = ManagedAgentOrigins.AgentHostCli,
-            Owner = caller,
-            CreatedBy = caller,
-            EntityTag = string.Empty,
-            AgentState = EntityStates.Saved,
-        });
 }

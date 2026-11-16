@@ -141,7 +141,7 @@ public sealed class EnvironmentSelectionService
     public async Task<PowerPlatformEnvironment> ResolveForCommandAsync(string? environmentId, CancellationToken cancellationToken)
     {
         if (environmentId is not null && string.IsNullOrWhiteSpace(environmentId))
-            throw new UsageException("An explicit environment target must not be empty.");
+            throw new UsageException("--environment-id requires a non-empty environment id.");
 
         var context = await CaptureActiveAsync(cancellationToken).ConfigureAwait(false);
         PowerPlatformEnvironment resolved;

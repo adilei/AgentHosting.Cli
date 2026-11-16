@@ -39,6 +39,7 @@ public sealed class ManagedAgentComponentCollectionTests
             new CopilotCatalogService(catalog, environments, locator, new FixedClock(ManagedAgentFixtures.Now), (_, _) => Task.CompletedTask),
             ManagedAgentFixtures.Principals(),
             ManagedAgentFixtures.ActivationPass(),
+            ManagedAgentFixtures.AgentNames(),
             new FixedClock(ManagedAgentFixtures.Now));
     }
 
@@ -354,6 +355,6 @@ internal sealed class RecordingPullWorkspacePort : ICopilotWorkspacePort
         return OnPull is null ? _inner.PullAsync(workspace, cancellationToken) : OnPull(workspace, cancellationToken);
     }
 
-    public Task<CopilotPushOutcome> PushAsync(CopilotWorkspaceInfo workspace, bool overwrite, CancellationToken cancellationToken) =>
-        _inner.PushAsync(workspace, overwrite, cancellationToken);
+    public Task<CopilotPushOutcome> PushAsync(CopilotWorkspaceInfo workspace, bool overwrite, bool overwriteSharedEnvironmentVariables, CancellationToken cancellationToken) =>
+        _inner.PushAsync(workspace, overwrite, overwriteSharedEnvironmentVariables, cancellationToken);
 }

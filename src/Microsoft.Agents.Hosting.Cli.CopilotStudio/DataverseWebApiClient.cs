@@ -14,6 +14,7 @@ public sealed class DataverseWebApiClient
 {
     private const int MaximumCollectionPages = 1000;
 
+    private readonly ISyncDataverseClient _dataverseClient;
     private readonly AgentHostDataverseHttpClientAccessor _httpClientAccessor;
 
     /// <summary>Creates the client.</summary>
@@ -21,7 +22,7 @@ public sealed class DataverseWebApiClient
     /// <param name="httpClientAccessor">Creates authenticated clients for the target organization.</param>
     public DataverseWebApiClient(ISyncDataverseClient dataverseClient, AgentHostDataverseHttpClientAccessor httpClientAccessor)
     {
-        ArgumentNullException.ThrowIfNull(dataverseClient);
+        _dataverseClient = dataverseClient ?? throw new ArgumentNullException(nameof(dataverseClient));
         _httpClientAccessor = httpClientAccessor ?? throw new ArgumentNullException(nameof(httpClientAccessor));
     }
 
@@ -30,8 +31,31 @@ public sealed class DataverseWebApiClient
     // Retained as an instance method for existing callers; raw requests now bind their own clients.
 #pragma warning disable CA1822
     public void Connect(CopilotEnvironmentContext environment) =>
-        DataverseOperationScope.Set(environment.DataverseOrganization, environment.TenantId, environment.Context);
+        DataverseTargeting.Connect(_dataverseClient, _httpClientAccessor, environment);
 #pragma warning restore CA1822
+
+    /// <summary>Deletes the connection reference with a logical name, reporting whether the environment held one.</summary>
+    /// <param name="environment">The environment whose organization is addressed.</param>
+    /// <param name="logicalName">The connection reference's logical name.</param>
+    /// <param name="cancellationToken">Cancels the requests.</param>
+    /// <returns><see langword="true"/> when a connection reference was deleted.</returns>
+    public async Task<bool> DeleteConnectionReferenceAsync(CopilotEnvironmentContext environment, string logicalName, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(logicalName);
+
+        Connect(environment);
+
+        var recordId = (await _dataverseClient.GetConnectionReferencesByLogicalNamesAsync([logicalName], cancellationToken).ConfigureAwait(false)).Where(row => logicalName.Equals(row.ConnectionReferenceLogicalName, StringComparison.OrdinalIgnoreCase)).Select(row => row.ConnectionReferenceId).FirstOrDefault();
+
+        if (recordId == Guid.Empty)
+        {
+            return false;
+        }
+
+        (await SendAsync(environment, HttpMethod.Delete, $"api/data/v9.2/connectionreferences({recordId})", cancellationToken).ConfigureAwait(false))?.Dispose();
+
+        return true;
+    }
 
     /// <summary>Sends one request against the environment's organization.</summary>
     /// <param name="environment">The environment whose organization is addressed.</param>

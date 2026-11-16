@@ -117,7 +117,7 @@ public sealed class CommandSurfaceSnapshotTests
     {
         Assert.Equal(["create", "login", "status", "list", "select", "delete", "name", "logout", "clear", "who"], Children(Help("auth")));
         Assert.Equal(["list", "select"], Children(Help("env")));
-        Assert.Equal(["package", "create", "init", "list", "show", "pull", "delete", "deploy", "share", "unshare"], Children(Help("agent")));
+        Assert.Equal(["package", "create", "copy", "init", "list", "show", "pull", "delete", "deploy", "share", "unshare"], Children(Help("agent")));
         Assert.Equal(["show"], Children(Help("agent", "share")));
         Assert.Equal(["connection", "channel", "oauth", "create", "list", "show", "update", "delete"], Children(Help("deployment")));
         Assert.Equal(["list", "add", "update", "remove", "connectors"], Children(Help("deployment", "connection")));
@@ -248,6 +248,7 @@ public sealed class CommandSurfaceSnapshotTests
         ["--agent-id"] = "-aid",
         ["--agent-name"] = "-an",
         ["--agent-type"] = "-at",
+        ["--all-resources"] = "-alr",
         ["--app-object-id"] = "-aoid",
         ["--auth-type"] = "-aut",
         ["--bot-name"] = "-bn",

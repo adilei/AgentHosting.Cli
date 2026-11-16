@@ -37,15 +37,16 @@ public sealed class ManagedAgentDeployGuardTests
             new CopilotCatalogService(catalog, environments, locator, new FixedClock(ManagedAgentFixtures.Now), (_, _) => Task.CompletedTask),
             ManagedAgentFixtures.Principals(),
             ManagedAgentFixtures.ActivationPass(),
+            ManagedAgentFixtures.AgentNames(),
             new FixedClock(ManagedAgentFixtures.Now));
     }
 
     private static CopilotEnvironmentResolver TwoEnvironments() => ManagedAgentFixtures.Resolver(
         EnvironmentFixtures.Environment("env-1", instanceUrl: CopilotTestFixtures.DataverseOrganization),
         EnvironmentFixtures.Environment("env-test", instanceUrl: CopilotTestFixtures.DataverseOrganization));
-    private static (TemporaryWorkspace Workspace, JsonAgentConfigStore Store) Registered()
+    private static (TemporaryWorkspace Workspace, JsonAgentConfigStore Store) Registered(bool classic = false)
     {
-        var workspace = new TemporaryWorkspace();
+        var workspace = classic ? TemporaryWorkspace.Classic() : new TemporaryWorkspace();
         var store = ManagedAgentFixtures.Store();
 
         store.Add(workspace.Root, ManagedAgentFixtures.Agent());
@@ -121,7 +122,7 @@ public sealed class ManagedAgentDeployGuardTests
     [Fact]
     public async Task Deploy_WithASchemaNameNamingAnotherAgent_Fails()
     {
-        var (workspace, store) = Registered();
+        var (workspace, store) = Registered(classic: true);
         using var _ = workspace;
         using var scope = new CurrentDirectoryScope(workspace.Root);
         var workspaces = new FakeCopilotWorkspacePort { WorkspaceExists = true };
@@ -136,7 +137,7 @@ public sealed class ManagedAgentDeployGuardTests
     [Fact]
     public async Task Deploy_WithASchemaNameNamingAnotherAgent_NeverPushes()
     {
-        var (workspace, store) = Registered();
+        var (workspace, store) = Registered(classic: true);
         using var _ = workspace;
         using var scope = new CurrentDirectoryScope(workspace.Root);
         var workspaces = new FakeCopilotWorkspacePort { WorkspaceExists = true };
@@ -390,6 +391,7 @@ public sealed class ManagedAgentDeployGuardTests
             new CopilotCatalogService(new FakeCopilotCatalogPort(), ManagedAgentFixtures.Resolver(), CopilotTestFixtures.Locator(workspaces, new SystemCopilotFileSystem()), new FixedClock(ManagedAgentFixtures.Now), (_, _) => Task.CompletedTask),
             ManagedAgentFixtures.Principals(),
             ManagedAgentFixtures.ActivationPass(),
+            ManagedAgentFixtures.AgentNames(),
             new FixedClock(ManagedAgentFixtures.Now));
 
         var failure = await Assert.ThrowsAsync<ManagedAgentException>(
@@ -403,9 +405,9 @@ public sealed class ManagedAgentDeployGuardTests
     private const string ExistingAgent = "11111111-1111-1111-1111-111111111111";
 
     /// <summary>A project whose slot has already deployed, under the schema name it recorded then.</summary>
-    private static (TemporaryWorkspace Workspace, JsonAgentConfigStore Store) Deployed(string recordedSchemaName = "con_agent")
+    private static (TemporaryWorkspace Workspace, JsonAgentConfigStore Store) Deployed(string recordedSchemaName = "con_agent", bool classic = false)
     {
-        var workspace = new TemporaryWorkspace();
+        var workspace = classic ? TemporaryWorkspace.Classic() : new TemporaryWorkspace();
         var store = ManagedAgentFixtures.Store();
 
         store.Add(workspace.Root, ManagedAgentFixtures.Agent() with { McsSchemaName = recordedSchemaName });
@@ -533,7 +535,7 @@ public sealed class ManagedAgentDeployGuardTests
     [Fact]
     public async Task Deploy_WhenASchemaNameOverridePointsAnEstablishedSlotElsewhere_Fails()
     {
-        var (workspace, store) = Deployed();
+        var (workspace, store) = Deployed(classic: true);
         using var _ = workspace;
         using var scope = new CurrentDirectoryScope(workspace.Root);
         var workspaces = new FakeCopilotWorkspacePort { WorkspaceExists = false };

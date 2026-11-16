@@ -33,6 +33,7 @@ public sealed class ManagedAgentCompositionTests
         services.AddSingleton<EnvironmentSelectionService>();
 
         services.AddSingleton<CopilotSchemaName>();
+        services.AddSingleton<CopilotAgentName>();
         services.AddSingleton<CopilotEnvironmentResolver>();
         services.AddSingleton<CopilotWorkspaceLocator>();
         services.AddSingleton<CopilotCatalogService>();
@@ -50,6 +51,7 @@ public sealed class ManagedAgentCompositionTests
         services.AddSingleton<ManagedAgentCloneMaterialiser>();
         services.AddSingleton<HomeDeploymentRegistrar>();
         services.AddSingleton<ManagedAgentCreateService>();
+        services.AddSingleton<ManagedAgentCopyService>();
         services.AddSingleton<ManagedAgentInitService>();
         services.AddSingleton<ManagedAgentListService>();
         services.AddSingleton<ManagedAgentShowService>();
@@ -104,6 +106,7 @@ public sealed class ManagedAgentCompositionTests
         services.AddSingleton<IDeploymentStore, ProjectDeploymentStore>();
         services.AddSingleton<IWorkflowStorePort, FakeWorkflowStorePort>();
         services.AddSingleton<IWorkflowScaffoldPort, FakeWorkflowScaffoldPort>();
+        services.AddSingleton<IWorkflowWorkspacePort, FakeWorkflowWorkspacePort>();
         services.AddSingleton<WorkflowProjectResolver>();
         services.AddSingleton<WorkflowCreateService>();
         services.AddSingleton<WorkflowInitService>();
@@ -127,6 +130,8 @@ public sealed class ManagedAgentCompositionTests
     [Theory]
     [InlineData(typeof(ManagedAgentServices))]
     [InlineData(typeof(ManagedAgentCreateService))]
+    [InlineData(typeof(ManagedAgentCopyService))]
+    [InlineData(typeof(ICopilotCopyPort))]
     [InlineData(typeof(ManagedAgentInitService))]
     [InlineData(typeof(ManagedAgentListService))]
     [InlineData(typeof(ManagedAgentDeleteService))]
@@ -138,6 +143,7 @@ public sealed class ManagedAgentCompositionTests
     [InlineData(typeof(AgentDeploymentShowService))]
     [InlineData(typeof(AgentDeploymentUpdateService))]
     [InlineData(typeof(AgentDeploymentDeleteService))]
+    [InlineData(typeof(ICopilotAgentResourcePort))]
     [InlineData(typeof(AgentDeploymentConnectionService))]
     [InlineData(typeof(DeploymentAgentTypeResolver))]
     [InlineData(typeof(IManagedAgentRegistry))]

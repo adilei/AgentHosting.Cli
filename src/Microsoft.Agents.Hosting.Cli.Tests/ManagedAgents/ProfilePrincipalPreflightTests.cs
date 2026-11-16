@@ -74,9 +74,10 @@ public sealed class ProfilePrincipalPreflightTests : IDisposable
         else
         {
             var service = new ManagedAgentCreateService(
-                new CopilotScaffoldService(scaffold, new CopilotSchemaName(), new SystemCopilotFileSystem()),
+                new CopilotScaffoldService(scaffold, new CopilotSchemaName(new SyncNamingRulesAdapter()), new SystemCopilotFileSystem()),
                 environments, catalog, config, registrar, ManagedAgentFixtures.Materialiser(workspaces),
-                new AgentConfigLocator(), ManagedAgentFixtures.Identities(), principals, workspaces);
+                new AgentConfigLocator(), ManagedAgentFixtures.Identities(), principals, workspaces,
+                ManagedAgentFixtures.AgentNames(), new SyncNamingRulesAdapter());
             await Assert.ThrowsAsync<UserPrincipalRequiredException>(() => service.CreateAsync(request, default));
         }
         Assert.Null(scaffold.LastCommand);
@@ -106,7 +107,8 @@ public sealed class ProfilePrincipalPreflightTests : IDisposable
         var service = new ManagedAgentDeployService(ManagedAgentFixtures.AgentResolver(config), config, config,
             environments, locator, new CopilotWorkspaceService(workspaces, locator), ManagedAgentFixtures.Identities(),
             attach, catalog, new CopilotCatalogService(catalog, environments, locator, new FixedClock(ManagedAgentFixtures.Now)),
-            principals, ManagedAgentFixtures.ActivationPass(), new FixedClock(ManagedAgentFixtures.Now));
+            principals, ManagedAgentFixtures.ActivationPass(), ManagedAgentFixtures.AgentNames(),
+            new FixedClock(ManagedAgentFixtures.Now));
 
         var failure = await Assert.ThrowsAnyAsync<AgentHostingException>(() =>
             service.DeployAsync(new ManagedAgentDeployRequest { Project = _root, AgentId = "agent-1", DeploymentName = "dev" }, default));
@@ -206,7 +208,8 @@ public sealed class ProfilePrincipalPreflightTests : IDisposable
             environments, locator, new CopilotWorkspaceService(workspaces, locator), ManagedAgentFixtures.Identities(),
             new RecordingAttachPort(), catalog,
             new CopilotCatalogService(catalog, environments, locator, new FixedClock(ManagedAgentFixtures.Now)),
-            principals, ManagedAgentFixtures.ActivationPass(), new FixedClock(ManagedAgentFixtures.Now));
+            principals, ManagedAgentFixtures.ActivationPass(), ManagedAgentFixtures.AgentNames(),
+            new FixedClock(ManagedAgentFixtures.Now));
 
         await service.DeployAsync(new ManagedAgentDeployRequest { Project = _root, AgentId = "agent-1", DeploymentName = "dev" }, default);
 
