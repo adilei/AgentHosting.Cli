@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text.Json;
 using System.Xml.Linq;
+using NuGet.Versioning;
 
 namespace Microsoft.Agents.Hosting.Cli.AuthenticationChecks;
 
@@ -49,11 +50,25 @@ public static class PackageChecks
             command.Attribute("EntryPoint")?.Value != PackageId + (rid.StartsWith("win-", StringComparison.Ordinal) ? ".exe" : ""))
             throw new InvalidOperationException("Installed tool entry point changed.");
         using var deps = ReadJson(package, prefix + PackageId + ".deps.json");
-        foreach (var dependency in new[] { "Microsoft.Identity.Client/4.92.0", "Microsoft.Identity.Client.Broker/4.92.0",
-            "Microsoft.Identity.Client.Extensions.Msal/4.92.0", "Azure.Identity/1.21.0", "Azure.Core/1.53.0",
-            "Microsoft.Agents.CopilotStudio.Sync/1.10.18-prerelease" })
-            if (!deps.RootElement.GetProperty("libraries").TryGetProperty(dependency, out _))
-                throw new InvalidOperationException("Packaged authentication dependency contract changed.");
+        (string Name, string MinimumVersion)[] baselines =
+        [
+            ("Microsoft.Identity.Client", "4.92.0"),
+            ("Microsoft.Identity.Client.Broker", "4.92.0"),
+            ("Microsoft.Identity.Client.Extensions.Msal", "4.92.0"),
+            ("Azure.Identity", "1.21.0"),
+            ("Azure.Core", "1.53.0"),
+            ("Microsoft.Agents.CopilotStudio.Sync", "1.10.18-prerelease"),
+        ];
+        var libraries = deps.RootElement.GetProperty("libraries");
+        foreach (var (name, minimumVersion) in baselines)
+        {
+            var minimum = NuGetVersion.Parse(minimumVersion);
+            if (!libraries.EnumerateObject().Any(library =>
+                library.Name.StartsWith(name + "/", StringComparison.OrdinalIgnoreCase) &&
+                NuGetVersion.TryParse(library.Name[(name.Length + 1)..], out var version) &&
+                VersionComparer.VersionRelease.Compare(version, minimum) >= 0))
+                throw new InvalidOperationException($"Packaged dependency '{name}' is missing, invalid, or below minimum version {minimumVersion}.");
+        }
     }
 
     public static (string Version, IReadOnlyList<string> Packages) CheckFamily(string packageDirectory)

@@ -7,6 +7,9 @@
     <IsTestProject>false</IsTestProject>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="NuGet.Versioning" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Microsoft.Agents.Hosting.Cli.Auth\Microsoft.Agents.Hosting.Cli.Auth.csproj" />
   </ItemGroup>
 </Project>

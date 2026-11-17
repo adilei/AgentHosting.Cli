@@ -45,14 +45,21 @@ Runtime-only installation must supply both shared frameworks. Use
 
 `global.json` selects SDK `10.0.403`, `rollForward: latestMajor`, without
 prerelease SDKs. CI retains `10.0.x` setup and the repository's SDK resolution,
-versioning and warnings-as-errors settings. Current package acceptance pins:
+versioning and warnings-as-errors settings. Package acceptance requires these
+minimum dependency versions:
 
-| Dependency | Version |
+| Dependency | Minimum version |
 | --- | --- |
 | Microsoft.Identity.Client / Broker / Extensions.Msal | 4.92.0 |
 | Azure.Identity | 1.21.0 |
 | Azure.Core | 1.53.0 |
-| Microsoft.Agents.CopilotStudio.Sync | 1.10.9-prerelease |
+| Microsoft.Agents.CopilotStudio.Sync | 1.10.18-prerelease |
+
+Newer versions, including major upgrades, are accepted without changing these
+baselines. Comparison uses NuGet version ordering, including prerelease labels;
+build metadata does not affect the minimum. Missing dependencies, invalid
+versions, and versions below a baseline fail acceptance. These minimums do not
+replace the package installation, command-contract, or native checks.
 
 The seven RIDs below are packaging targets, **not minimum OS declarations**.
 Product native minimum Windows/macOS versions, Linux distributions/libc
@@ -255,7 +262,7 @@ osx-x64;osx-arm64;win-x86;win-x64;win-arm64;linux-x64;linux-arm64
 With .NET 10 this tool produces **eight nupkgs**: one `DotnetTool` routing
 package and seven same-version `DotnetToolRidPackage` implementations. Each
 implementation retains every declared shim, the executable/assemblies,
-framework references, dependency versions and shipped feature defaults.
+framework references, minimum dependency versions and shipped feature defaults.
 Only the CLI is packable. The acceptance console is neither packed nor
 discovered as an xUnit test project.
 

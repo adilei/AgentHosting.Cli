@@ -56,7 +56,6 @@ public sealed class AuthenticationPackageTests
     [InlineData("application-support-missing")]
     [InlineData("live-test-disabled")]
     [InlineData("command-renamed")]
-    [InlineData("dependency-mismatch")]
     [InlineData("extra-shim")]
     public void ChangedRuntimeFeatureCommandOrDependencyContractFailsAcceptance(string mutation)
     {
@@ -91,8 +90,43 @@ public sealed class AuthenticationPackageTests
         PackageChecks.CheckImplementation(zip, "win-x64");
     }
 
+    [Theory]
+    [InlineData("Microsoft.Identity.Client", "4.92.1")]
+    [InlineData("Microsoft.Identity.Client.Broker", "4.93.0")]
+    [InlineData("Microsoft.Identity.Client.Extensions.Msal", "5.0.0")]
+    [InlineData("Azure.Identity", "1.22.0")]
+    [InlineData("Azure.Core", "2.0.0")]
+    [InlineData("Microsoft.Agents.CopilotStudio.Sync", "1.10.19-prerelease")]
+    [InlineData("Microsoft.Agents.CopilotStudio.Sync", "1.10.18")]
+    [InlineData("Microsoft.Identity.Client", "4.93.0-preview.1")]
+    [InlineData("Microsoft.Identity.Client", "4.92.0+build.1")]
+    public void DependenciesAtOrAboveBaselineAreAccepted(string name, string version)
+    {
+        using var bytes = Fixture(dependency: (name, version));
+        using var zip = new ZipArchive(bytes, ZipArchiveMode.Read);
+        PackageChecks.CheckImplementation(zip, "win-x64");
+    }
+
+    [Theory]
+    [InlineData("Microsoft.Identity.Client", "4.91.9")]
+    [InlineData("Microsoft.Identity.Client.Broker", "4.91.9")]
+    [InlineData("Microsoft.Identity.Client.Extensions.Msal", "4.91.9")]
+    [InlineData("Azure.Identity", "1.20.9")]
+    [InlineData("Azure.Core", "1.52.9")]
+    [InlineData("Microsoft.Agents.CopilotStudio.Sync", "1.10.9-prerelease")]
+    [InlineData("Microsoft.Agents.CopilotStudio.Sync", "1.10.18-alpha")]
+    [InlineData("Microsoft.Identity.Client", "4.92.0-preview.1")]
+    [InlineData("Microsoft.Identity.Client", "invalid")]
+    [InlineData("Microsoft.Identity.Client", null)]
+    public void MissingMalformedOrBelowBaselineDependenciesFailAcceptance(string name, string? version)
+    {
+        using var bytes = Fixture(dependency: (name, version));
+        using var zip = new ZipArchive(bytes, ZipArchiveMode.Read);
+        Assert.Throws<InvalidOperationException>(() => PackageChecks.CheckImplementation(zip, "win-x64"));
+    }
+
     private static MemoryStream Fixture(string? missing = null, string? mutation = null, string? featuresJson = null,
-        string? dependenciesJson = null)
+        string? dependenciesJson = null, (string Name, string? Version)? dependency = null)
     {
         var result = new MemoryStream();
         using (var zip = new ZipArchive(result, ZipArchiveMode.Create, leaveOpen: true))
@@ -119,9 +153,22 @@ public sealed class AuthenticationPackageTests
             Add("featureflags.json", featuresJson ?? System.Text.Json.JsonSerializer.Serialize(features));
             Add("Microsoft.Agents.Hosting.Cli.runtimeconfig.json", mutation == "self-contained" ? """{"runtimeOptions":{"includedFrameworks":[]}}""" :
                 """{"runtimeOptions":{"tfm":"net10.0","frameworks":[{"name":"Microsoft.NETCore.App","version":"10.0.0"},{"name":"Microsoft.AspNetCore.App","version":"10.0.0"}]}}""");
+            var libraries = new Dictionary<string, object>
+            {
+                ["Microsoft.Identity.Client/4.92.0"] = new { },
+                ["Microsoft.Identity.Client.Broker/4.92.0"] = new { },
+                ["Microsoft.Identity.Client.Extensions.Msal/4.92.0"] = new { },
+                ["Azure.Identity/1.21.0"] = new { },
+                ["Azure.Core/1.53.0"] = new { },
+                ["Microsoft.Agents.CopilotStudio.Sync/1.10.18-prerelease"] = new { },
+            };
+            if (dependency is { } changed)
+            {
+                libraries.Remove(libraries.Keys.Single(key => key.StartsWith(changed.Name + "/", StringComparison.Ordinal)));
+                if (changed.Version is not null) libraries.Add(changed.Name + "/" + changed.Version, new { });
+            }
             Add("Microsoft.Agents.Hosting.Cli.deps.json",
-                dependenciesJson ?? """{"libraries":{"Microsoft.Identity.Client/VERSION":{},"Microsoft.Identity.Client.Broker/4.92.0":{},"Microsoft.Identity.Client.Extensions.Msal/4.92.0":{},"Azure.Identity/1.21.0":{},"Azure.Core/1.53.0":{},"Microsoft.Agents.CopilotStudio.Sync/1.10.18-prerelease":{}}}"""
-                    .Replace("VERSION", mutation == "dependency-mismatch" ? "4.0.0" : "4.92.0", StringComparison.Ordinal));
+                dependenciesJson ?? System.Text.Json.JsonSerializer.Serialize(new { libraries }));
 
             void Add(string name, string text)
             {
