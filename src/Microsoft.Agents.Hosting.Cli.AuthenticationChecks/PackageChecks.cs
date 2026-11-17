@@ -51,7 +51,7 @@ public static class PackageChecks
         using var deps = ReadJson(package, prefix + PackageId + ".deps.json");
         foreach (var dependency in new[] { "Microsoft.Identity.Client/4.92.0", "Microsoft.Identity.Client.Broker/4.92.0",
             "Microsoft.Identity.Client.Extensions.Msal/4.92.0", "Azure.Identity/1.21.0", "Azure.Core/1.53.0",
-            "Microsoft.Agents.CopilotStudio.Sync/1.10.9-prerelease" })
+            "Microsoft.Agents.CopilotStudio.Sync/1.10.18-prerelease" })
             if (!deps.RootElement.GetProperty("libraries").TryGetProperty(dependency, out _))
                 throw new InvalidOperationException("Packaged authentication dependency contract changed.");
     }

@@ -82,7 +82,17 @@ public sealed class AuthenticationPackageTests
         PackageChecks.CheckImplementation(zip, "win-x64");
     }
 
-    private static MemoryStream Fixture(string? missing = null, string? mutation = null, string? featuresJson = null)
+    [Fact]
+    public void ShippedDependenciesAreAccepted()
+    {
+        var dependenciesPath = Path.ChangeExtension(typeof(AgentHostCli).Assembly.Location, ".deps.json");
+        using var bytes = Fixture(dependenciesJson: File.ReadAllText(dependenciesPath));
+        using var zip = new ZipArchive(bytes, ZipArchiveMode.Read);
+        PackageChecks.CheckImplementation(zip, "win-x64");
+    }
+
+    private static MemoryStream Fixture(string? missing = null, string? mutation = null, string? featuresJson = null,
+        string? dependenciesJson = null)
     {
         var result = new MemoryStream();
         using (var zip = new ZipArchive(result, ZipArchiveMode.Create, leaveOpen: true))
@@ -110,7 +120,7 @@ public sealed class AuthenticationPackageTests
             Add("Microsoft.Agents.Hosting.Cli.runtimeconfig.json", mutation == "self-contained" ? """{"runtimeOptions":{"includedFrameworks":[]}}""" :
                 """{"runtimeOptions":{"tfm":"net10.0","frameworks":[{"name":"Microsoft.NETCore.App","version":"10.0.0"},{"name":"Microsoft.AspNetCore.App","version":"10.0.0"}]}}""");
             Add("Microsoft.Agents.Hosting.Cli.deps.json",
-                """{"libraries":{"Microsoft.Identity.Client/VERSION":{},"Microsoft.Identity.Client.Broker/4.92.0":{},"Microsoft.Identity.Client.Extensions.Msal/4.92.0":{},"Azure.Identity/1.21.0":{},"Azure.Core/1.53.0":{},"Microsoft.Agents.CopilotStudio.Sync/1.10.9-prerelease":{}}}"""
+                dependenciesJson ?? """{"libraries":{"Microsoft.Identity.Client/VERSION":{},"Microsoft.Identity.Client.Broker/4.92.0":{},"Microsoft.Identity.Client.Extensions.Msal/4.92.0":{},"Azure.Identity/1.21.0":{},"Azure.Core/1.53.0":{},"Microsoft.Agents.CopilotStudio.Sync/1.10.18-prerelease":{}}}"""
                     .Replace("VERSION", mutation == "dependency-mismatch" ? "4.0.0" : "4.92.0", StringComparison.Ordinal));
 
             void Add(string name, string text)
