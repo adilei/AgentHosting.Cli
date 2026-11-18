@@ -31,6 +31,9 @@ jobs:
     - name: Restore plugin tooling
       run: npm --prefix .github/plugins/msagent-assistant/scripts ci --no-audit --no-fund
 
+    - name: Test chat canvas offline
+      run: node --test .github/extensions/copilot-studio-chat/chat.test.mjs
+
     - name: Build and test plugin
       shell: pwsh
       run: |

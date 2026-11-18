@@ -7,6 +7,57 @@ namespace Microsoft.Agents.Hosting.Cli.Tests;
 
 public sealed class LiveTestExecutionTests
 {
+    [Fact]
+    public async Task QueryReadsExplicitFilesAndPreservesTheirNamesAndBytes()
+    {
+        var directory = Directory.CreateTempSubdirectory("msagent-file-test-");
+        try
+        {
+            var file = Path.Combine(directory.FullName, "study.xlsx");
+            await File.WriteAllBytesAsync(file, [1, 2, 3]);
+            var session = new FakeSession();
+            var execution = new LiveTestExecution(
+                new LiveTestRequest { Query = "compare", Files = [file], ConversationId = "existing", Json = true },
+                _ => new LiveTestDestination("synthetic", "tenant", "schema", "explicit"),
+                (_, _, _) => Task.FromResult("token"), (_, _, _) => session);
+            Assert.Equal(0, await execution.RenderAsync(new StringWriter(), new StringWriter(), false, CancellationToken.None));
+            var attachment = Assert.Single(session.Attachments);
+            Assert.Equal("study.xlsx", attachment.Name);
+            Assert.Equal("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", attachment.ContentType);
+            Assert.Equal(new byte[] { 1, 2, 3 }, attachment.Content);
+            Assert.Equal(1, session.QueryCalls);
+        }
+        finally { directory.Delete(recursive: true); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnreadableAndOversizedFilesFailBeforeAuthentication(bool oversized)
+    {
+        var directory = Directory.CreateTempSubdirectory("msagent-file-test-");
+        try
+        {
+            var file = Path.Combine(directory.FullName, "study.pdf");
+            if (oversized)
+            {
+                using var stream = File.Create(file);
+                stream.SetLength(10 * 1024 * 1024 + 1);
+            }
+            var execution = new LiveTestExecution(
+                new LiveTestRequest { Query = "compare", Files = [file], Json = true },
+                _ => throw new InvalidOperationException("Resolution must not run."),
+                (_, _, _) => throw new InvalidOperationException("Auth must not run."),
+                (_, _, _) => throw new InvalidOperationException("Session must not start."));
+            using var output = new StringWriter();
+            Assert.Equal(2, await execution.RenderAsync(output, new StringWriter(), false, CancellationToken.None));
+            using var result = JsonDocument.Parse(output.ToString());
+            Assert.Equal("invalid-input", result.RootElement.GetProperty("errorKind").GetString());
+            Assert.Equal("not-attempted", result.RootElement.GetProperty("queryDelivery").GetString());
+        }
+        finally { directory.Delete(recursive: true); }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -85,6 +136,52 @@ public sealed class LiveTestExecutionTests
         Assert.Equal("answer", root.GetProperty("activities")[1].GetProperty("text").GetString());
         Assert.Equal("service", root.GetProperty("conversationIdSource").GetString());
         Assert.Equal("completed", root.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task StartOnlyStreamsOpeningActivitiesAndReturnsConversationWithoutSendingAQuery()
+    {
+        var session = new FakeSession();
+        var execution = new LiveTestExecution(
+            new LiveTestRequest { StartConversation = true, Json = true },
+            _ => new LiveTestDestination("synthetic", "tenant", "schema", "explicit"),
+            (_, _, _) => Task.FromResult("token"),
+            (_, _, _) => session);
+        using var output = new StringWriter();
+
+        Assert.Equal(0, await execution.RenderAsync(output, new StringWriter(), false, CancellationToken.None));
+
+        Assert.Equal(1, session.StartCalls);
+        Assert.Equal(0, session.QueryCalls);
+        using var json = JsonDocument.Parse(output.ToString());
+        var result = json.RootElement;
+        Assert.Equal("completed", result.GetProperty("status").GetString());
+        Assert.Equal("confirmed", result.GetProperty("conversationId").GetString());
+        Assert.Equal("service", result.GetProperty("conversationIdSource").GetString());
+        Assert.Equal("not-attempted", result.GetProperty("queryDelivery").GetString());
+        Assert.Equal("init", result.GetProperty("activities")[0].GetProperty("text").GetString());
+        Assert.Equal(1, result.GetProperty("activityCount").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("hello", null)]
+    [InlineData("", null)]
+    [InlineData(null, "existing")]
+    public async Task StartOnlyRejectsQueryAndConversationIdBeforeResolvingTargetsOrAuthenticating(
+        string? query, string? conversationId)
+    {
+        var execution = new LiveTestExecution(
+            new LiveTestRequest { StartConversation = true, Query = query, ConversationId = conversationId, Json = true },
+            _ => throw new InvalidOperationException("Target resolution must not run."),
+            (_, _, _) => throw new InvalidOperationException("Authentication must not run."),
+            (_, _, _) => throw new InvalidOperationException("Session must not be created."));
+        using var output = new StringWriter();
+
+        Assert.Equal(2, await execution.RenderAsync(output, new StringWriter(), false, CancellationToken.None));
+
+        using var json = JsonDocument.Parse(output.ToString());
+        Assert.Equal("invalid-input", json.RootElement.GetProperty("errorKind").GetString());
+        Assert.Equal("not-attempted", json.RootElement.GetProperty("queryDelivery").GetString());
     }
 
     [Fact]
@@ -227,6 +324,13 @@ public sealed class LiveTestExecutionTests
 
     private sealed class FakeSession : ILiveTestSession
     {
+        public IReadOnlyList<LiveTestAttachment> Attachments { get; private set; } = [];
+        public IAsyncEnumerable<JsonElement> QueryAsync(string query, string conversationId,
+            IReadOnlyList<LiveTestAttachment> attachments, CancellationToken cancellationToken)
+        {
+            Attachments = attachments;
+            return QueryAsync(query, conversationId, cancellationToken);
+        }
         public int StartCalls { get; private set; }
         public int QueryCalls { get; private set; }
         public string? Query { get; private set; }

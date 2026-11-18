@@ -1,0 +1,403 @@
+import { renderMarkdown } from "./markdown.mjs";
+
+const capability = location.hash.slice(1);
+const element = id => document.getElementById(id);
+let state;
+let rendered = "";
+let draftSent;
+let draftVersion = 0;
+let stopped = false;
+let acting = false;
+let actingOperation;
+let debugRevision = -1;
+let debugUpdatedAt = 0;
+let debugView = false;
+let debugSelection;
+let debugTargets = new Map();
+let debugSegments = [];
+let debugText = "";
+let debugMarkedSegments = [];
+let debugMatchIndex = 0;
+let debugMatchCount = 0;
+let pendingFiles = [];
+let preparingFiles = false;
+let messageMenus = new Map();
+
+function agentName() {
+    return state.agentName ?? state.target.schemaName ?? state.target.agentId;
+}
+
+function renderPendingFiles() {
+    element("pending-files").replaceChildren(...pendingFiles.map((file, index) => {
+        const item = document.createElement("span");
+        item.textContent = file.name;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "Remove";
+        remove.setAttribute("aria-label", `Remove ${file.name}`);
+        remove.addEventListener("click", () => {
+            pendingFiles.splice(index, 1);
+            draftVersion++;
+            renderPendingFiles();
+            controls();
+        });
+        item.append(remove);
+        return item;
+    }));
+}
+
+async function downloadFile(file, button) {
+    button.disabled = true;
+    try {
+        const response = await fetch(`/files/${file.id}`, { headers: { Authorization: `Bearer ${capability}` } });
+        if (!response.ok) throw new Error((await response.json()).error ?? "The file could not be downloaded.");
+        const url = URL.createObjectURL(await response.blob());
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = file.name;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) { showError(error.message); }
+    finally { button.disabled = false; }
+}
+
+function highlightDebug(scroll = false) {
+    if (!debugSelection) return;
+    const { turnId, role } = debugSelection;
+    const target = (role === "assistant" && debugTargets.get(`response-${turnId}`)) ||
+        debugTargets.get(`message-${turnId}-${role}`);
+    for (const node of debugTargets.values()) node.className = node === target ? "debug-entry debug-selected" : "debug-entry";
+    if (scroll) {
+        if (!target) throw new Error("Debug data for this message is no longer available.");
+        target.scrollIntoView({ block: "start" });
+        target.focus({ preventScroll: true });
+    }
+    return target;
+}
+
+function searchDebug({ reset = false, direction = 0, scroll = false } = {}) {
+    for (const segment of debugMarkedSegments) segment.node.textContent = segment.text;
+    debugMarkedSegments = [];
+    if (reset) debugMatchIndex = 0;
+    else if (direction && debugMatchCount) {
+        debugMatchIndex = (debugMatchIndex + direction + debugMatchCount) % debugMatchCount;
+    }
+
+    const query = element("debug-search").value;
+    let selected;
+    let lastStart;
+    let lastEnd;
+    let count = 0;
+    if (query) {
+        const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
+        let match;
+        while ((match = pattern.exec(debugText)) !== null) {
+            lastStart = match.index;
+            lastEnd = match.index + match[0].length;
+            if (count === debugMatchIndex) selected = { start: lastStart, end: lastEnd };
+            count++;
+        }
+    }
+    debugMatchCount = count;
+    if (count && !selected) {
+        debugMatchIndex = count - 1;
+        selected = { start: lastStart, end: lastEnd };
+    } else if (!count) debugMatchIndex = 0;
+    element("debug-search-count").textContent = !query ? "" : count ? `${debugMatchIndex + 1} of ${count}` : "No matches";
+    element("debug-previous").disabled = !count;
+    element("debug-next").disabled = !count;
+    if (!selected) return;
+
+    let first;
+    for (const segment of debugSegments) {
+        const start = Math.max(0, selected.start - segment.start);
+        const end = Math.min(segment.text.length, selected.end - segment.start);
+        if (start >= end) continue;
+        const mark = document.createElement("mark");
+        mark.className = "debug-search-match";
+        mark.textContent = segment.text.slice(start, end);
+        segment.node.replaceChildren(segment.text.slice(0, start), mark, segment.text.slice(end));
+        debugMarkedSegments.push(segment);
+        first ??= mark;
+    }
+    if (scroll) first?.scrollIntoView({ block: "center", inline: "nearest" });
+}
+
+function renderDebug(debug) {
+    const focused = document.activeElement?.className === "debug-entry debug-selected";
+    debugTargets = new Map();
+    debugSegments = [];
+    debugMarkedSegments = [];
+    const parts = [];
+    let offset = 0;
+    const add = (text, node = document.createElement("span")) => {
+        node.textContent = text;
+        debugSegments.push({ node, text, start: offset });
+        offset += text.length;
+        parts.push(node);
+    };
+    add("{\n");
+    for (const name of ["messages", "responses"]) {
+        if (name === "responses") add(",\n");
+        add(`  "${name}": [`);
+        debug[name].forEach((value, index) => {
+            add(index ? ",\n" : "\n");
+            const node = document.createElement("span");
+            node.id = `debug-${name === "messages" ? `message-${value.turnId}-${value.role}` : `response-${value.turnId}`}`;
+            node.tabIndex = -1;
+            node.className = "debug-entry";
+            debugTargets.set(node.id.slice(6), node);
+            add(JSON.stringify(value, null, 2).replace(/^/gm, "    "), node);
+        });
+        add(debug[name].length ? "\n  ]" : "]");
+    }
+    add(`,\n  "truncated": ${JSON.stringify(debug.truncated)}\n}`);
+    debugText = debugSegments.map(segment => segment.text).join("");
+    element("debug-output").replaceChildren(...parts);
+    searchDebug();
+    const target = highlightDebug();
+    if (focused) target?.focus({ preventScroll: true });
+}
+
+async function api(route, input) {
+    const response = await fetch(route, {
+        method: input === undefined ? "GET" : "POST",
+        headers: { Authorization: `Bearer ${capability}`, ...(input === undefined ? {} : { "Content-Type": "application/json" }) },
+        ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error ?? "The local chat service failed.");
+    return data;
+}
+
+function showError(message) {
+    element("error").textContent = message ?? "";
+    element("error").hidden = !message;
+}
+
+function finishDraft(failed) {
+    if (failed && draftSent && draftSent.version === draftVersion && !element("query").value) {
+        element("query").value = draftSent.text;
+        pendingFiles = draftSent.files;
+        renderPendingFiles();
+    }
+    draftSent = undefined;
+}
+
+function controls() {
+    const busy = stopped || acting || preparingFiles || (state?.busy ?? true);
+    const canConnect = ["ready", "authentication-required"].includes(state?.status);
+    element("files").disabled = preparingFiles;
+    element("send").disabled = busy || !canConnect || !state?.connected || !element("query").value.trim();
+    element("cancel").disabled = acting || !state?.busy;
+    element("check").disabled = busy;
+    element("new-chat").disabled = busy;
+    element("view-chat").setAttribute("aria-pressed", String(!debugView));
+    element("view-debug").setAttribute("aria-pressed", String(debugView));
+    element("chat-view").hidden = debugView;
+    element("debug-view").hidden = !debugView;
+    const replying = (acting && ["send", "connect", "reset"].includes(actingOperation)) ||
+        (state?.busy && ["send", "connect"].includes(state.operation));
+    element("typing").hidden = !replying;
+    const typingText = state?.messages.at(-1)?.streaming ? "Copilot Studio is replying" : "Waiting for Copilot Studio";
+    if (element("typing-text").textContent !== typingText) element("typing-text").textContent = typingText;
+}
+
+async function refreshDebug(force = false) {
+    if (!debugView || !state) return;
+    if (!force && (debugRevision === state.debugRevision || (state.busy && Date.now() - debugUpdatedAt < 500))) return;
+    const { revision, ...debug } = await api("/debug");
+    element("debug-status").textContent = debug.truncated
+        ? "Some raw response details exceeded the 1 MB limit and were omitted. The current chat messages are included."
+        : state.busy ? "Live conversation data. Responses update as they arrive."
+        : debug.responses.some(response => !response.complete) ? "Conversation data includes an incomplete CLI response."
+        : debug.responses.length ? "Current conversation data. Known credentials redacted."
+        : "No conversation data yet.";
+    renderDebug(debug);
+    debugRevision = revision;
+    debugUpdatedAt = Date.now();
+}
+
+async function refresh() {
+    try {
+        const next = await api("/state");
+        if (!next.busy && draftSent?.accepted && (next.error || next.messages.length > draftSent.messageCount)) {
+            finishDraft(Boolean(next.error));
+        }
+        state = next;
+        element("identity").textContent = state.account ? `CLI account: ${state.account}` : "No signed-in CLI account";
+        const target = state.target;
+        element("agent").textContent = target.schemaName ?? target.agentId ?? "No agent selected";
+        element("agent").title = element("agent").textContent;
+        element("target").textContent = [
+            target.schemaName ?? target.agentId, target.deploymentName ?? target.deploymentId,
+            target.environmentId, target.tenantId && `Tenant ${target.tenantId}`,
+            !target.project && "Explicit target; deployment label is not registry-verified",
+        ].filter(Boolean).join(" · ");
+        element("status").textContent = state.busy ? "Working..."
+            : state.status === "ready" ? state.connected ? "Ready" : state.restored ? "Conversation ended" : "Not connected"
+            : state.status === "authentication-required" ? "Signed out" : "Needs attention";
+        element("status").className = state.busy ? "busy" : state.status;
+        element("status").title = state.status === "ready" && !state.connected && state.restored
+            ? "The canvas restarted, so this conversation ended. Select New chat to start another."
+            : state.status === "ready" ? "Access is checked when sending."
+            : state.status === "authentication-required" ? "The msagent CLI is signed out."
+            : state.status;
+        const key = JSON.stringify([agentName(), state.messages]);
+        const inspecting = state.messages.some(message => messageMenus.get(`${message.turnId}-${message.role}`)?.open);
+        if (rendered !== key && !inspecting) {
+            messageMenus = new Map();
+            element("messages").replaceChildren(...state.messages.map(message => {
+                const article = document.createElement("article");
+                article.className = `message ${message.role}`;
+                const label = document.createElement("strong");
+                label.textContent = `${message.role === "user" ? "You" : agentName()}${message.streaming ? " · Streaming..." : message.partial ? " · Incomplete" : ""}`;
+                const text = message.role === "assistant" ? renderMarkdown(message.text, document) : document.createElement("p");
+                if (message.role !== "assistant") text.textContent = message.text;
+                const heading = document.createElement("div");
+                heading.className = "message-heading";
+                heading.append(label);
+                if (Number.isSafeInteger(message.turnId)) {
+                    const menu = document.createElement("details");
+                    menu.className = "message-menu";
+                    messageMenus.set(`${message.turnId}-${message.role}`, menu);
+                    const summary = document.createElement("summary");
+                    summary.textContent = "...";
+                    summary.setAttribute("aria-label", "Message options");
+                    const inspect = document.createElement("button");
+                    inspect.type = "button";
+                    inspect.textContent = "View debug";
+                    inspect.addEventListener("click", () => {
+                        menu.open = false;
+                        return selectView(true, { turnId: message.turnId, role: message.role });
+                    });
+                    menu.append(summary, inspect);
+                    heading.append(menu);
+                }
+                article.append(heading, text);
+                if (message.files?.length) {
+                    const files = document.createElement("div");
+                    files.className = "message-files";
+                    for (const file of message.files) {
+                        const item = document.createElement(file.id ? "button" : "span");
+                        item.textContent = file.id ? `Download ${file.name}` : `Attached: ${file.name}`;
+                        if (file.id) {
+                            item.type = "button";
+                            item.addEventListener("click", () => downloadFile(file, item));
+                        }
+                        files.append(item);
+                    }
+                    article.append(files);
+                }
+                return article;
+            }));
+            rendered = key;
+            element("messages").lastElementChild?.scrollIntoView({ block: "end" });
+        }
+        showError(state.error);
+        await refreshDebug();
+        controls();
+    } catch (error) {
+        stopped = true;
+        finishDraft(true);
+        element("typing").hidden = true;
+        showError(`${error.message} Reopen the canvas if its backend stopped. No message will be replayed.`);
+        for (const id of ["send", "check", "new-chat", "cancel"]) element(id).disabled = true;
+    }
+}
+
+async function act(operation, input = {}) {
+    if (acting) return;
+    acting = true;
+    actingOperation = operation;
+    controls();
+    try {
+        await api(`/${operation}`, input);
+        if (operation === "send" && draftSent) draftSent.accepted = true;
+        await refresh();
+    } catch (error) {
+        if (operation === "send") finishDraft(true);
+        showError(error.message);
+    }
+    finally {
+        acting = false;
+        actingOperation = undefined;
+        if (!stopped) controls();
+    }
+}
+
+for (const operation of ["check", "cancel"]) {
+    element(operation).addEventListener("click", () => act(operation));
+}
+element("new-chat").addEventListener("click", () => act("reset", { reconnect: true }));
+element("query").addEventListener("input", () => { draftVersion++; controls(); });
+element("files").addEventListener("change", async () => {
+    const selected = Array.from(element("files").files);
+    element("files").value = "";
+    if (pendingFiles.length + selected.length > 5 ||
+        [...pendingFiles, ...selected].reduce((bytes, file) => bytes + file.size, 0) > 10 * 1024 * 1024) {
+        showError("Attach at most five files, at most 10 MiB total.");
+        return;
+    }
+    preparingFiles = true;
+    controls();
+    try {
+        const files = await Promise.all(selected.map(file => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve({ name: file.name, size: file.size, base64: reader.result.slice(reader.result.indexOf(",") + 1) });
+            reader.onerror = () => reject(new Error("A selected file could not be read."));
+            reader.onabort = reader.onerror;
+            reader.readAsDataURL(file);
+        })));
+        pendingFiles.push(...files);
+        draftVersion++;
+        renderPendingFiles();
+        showError();
+    } catch (error) { showError(error.message); }
+    finally { preparingFiles = false; controls(); }
+});
+element("query").addEventListener("keydown", event => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    if (!event.repeat && !element("send").disabled) element("composer").requestSubmit();
+});
+async function selectView(debug, selection) {
+    if (selection) debugSelection = selection;
+    debugView = debug;
+    controls();
+    try { await refreshDebug(true); if (selection) highlightDebug(true); }
+    catch (error) { showError(error.message); }
+}
+element("view-chat").addEventListener("click", () => selectView(false));
+element("view-debug").addEventListener("click", () => selectView(true));
+element("debug-search").addEventListener("input", () => searchDebug({ reset: true, scroll: true }));
+element("debug-search").addEventListener("keydown", event => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === "Enter") {
+        event.preventDefault();
+        searchDebug({ direction: event.shiftKey ? -1 : 1, scroll: true });
+    } else if (event.key === "Escape") {
+        event.preventDefault();
+        element("debug-search").value = "";
+        searchDebug({ reset: true });
+    }
+});
+element("debug-previous").addEventListener("click", () => searchDebug({ direction: -1, scroll: true }));
+element("debug-next").addEventListener("click", () => searchDebug({ direction: 1, scroll: true }));
+element("composer").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (element("send").disabled) return;
+    const text = element("query").value;
+    const files = pendingFiles;
+    draftSent = { text, files, messageCount: state.messages.length, version: draftVersion, accepted: false };
+    element("query").value = "";
+    pendingFiles = [];
+    renderPendingFiles();
+    await act("send", { query: text, files: files.map(({ name, base64 }) => ({ name, base64 })) });
+});
+
+async function poll() {
+    await refresh();
+    if (!stopped) setTimeout(poll, state?.busy ? 100 : 750);
+}
+poll();

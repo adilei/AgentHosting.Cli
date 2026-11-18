@@ -1,0 +1,1366 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { request } from "node:http";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { runInNewContext } from "node:vm";
+import { Chat, ChatRegistry } from "./chat.mjs";
+import { askArguments, parseResult, ReplyStream, resolveExecutable, resolveTarget, runCommand, validateTarget, visibleMessages } from "./client.mjs";
+import { ActivityReader } from "./activity-reader.mjs";
+import { renderMarkdown } from "./markdown.mjs";
+import { ConversationData } from "./debug.mjs";
+import { startServer } from "./server.mjs";
+import { StartedChats } from "./started.mjs";
+import { FileDownloads, uploads, withUploadedFiles, publicAddress, downloadPublicFile } from "./files.mjs";
+
+const target = { schemaName: "agent_schema", environmentId: "env-id",
+    tenantId: "11111111-1111-1111-1111-111111111111", deploymentName: "development" };
+const account = { success: true, signedIn: true, account: "user@example.test", tenantId: target.tenantId, cloud: "prod" };
+const help = "--query --file --start-conversation --conversation-id --project --agent-id --deployment-id --schema-name --environment-id --tenant --deployment-name --json --non-interactive";
+const outcome = { success: true, schemaVersion: "1", status: "completed", exitCode: 0,
+    conversationId: "conversation-1", activities: [{ type: "message", text: "Hello" }] };
+const json = (data, code = 0) => ({ code, output: JSON.stringify(data) });
+const streamed = (text, sequence, type = "streaming", id = "reply") => ({
+    type: "message", text, entities: [{ type: "streaminfo", streamId: id, streamSequence: sequence, streamType: type }],
+});
+
+test("conversation data preserves event structure and masks credentials without mutating activities or messages", () => {
+    const data = new ConversationData();
+    const event = { type: "event", name: "ToolInvocation", value: {
+        tool: "weather", tokenUsage: 12, access_token: "access-secret",
+        headers: { Authorization: "Bearer header-secret" },
+        parameters: [{ name: "clientSecret", value: "client-secret" }, { name: "city", value: "Paris" }],
+        text: "Bearer inline-secret", jwt: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature",
+        url: "https://example.test?sig=url-secret&city=Paris",
+    } };
+    data.begin("connect");
+    data.activity(event);
+    let response = data.snapshot().responses[0];
+    assert.equal(response.complete, false);
+    assert.equal(response.payload.activities[0].name, "ToolInvocation");
+    const body = JSON.stringify(response.payload);
+    for (const secret of ["access-secret", "header-secret", "client-secret", "inline-secret", "url-secret"]) {
+        assert(!body.includes(secret));
+    }
+    assert.equal(response.payload.activities[0].value.tokenUsage, 12);
+    assert.equal(response.payload.activities[0].value.jwt, "***");
+    assert.equal(response.payload.activities[0].value.parameters[1].value, "Paris");
+    assert.equal(event.value.access_token, "access-secret");
+    data.finish({ ...outcome, activities: [event] });
+    response = data.snapshot().responses[0];
+    assert.equal(response.complete, true);
+    assert.equal(response.payload.status, "completed");
+    assert.equal(response.payload.conversationId, "conversation-1");
+    const messages = [{ role: "user", text: "Bearer message-secret" }];
+    assert.equal(data.snapshot(messages).messages[0].text, "Bearer ***");
+    assert.equal(messages[0].text, "Bearer message-secret");
+});
+
+test("conversation data bounds raw responses and labels oversized or unfinished output", () => {
+    const data = new ConversationData(220);
+    data.begin("send");
+    data.activity({ type: "event", name: "Started" });
+    data.activity({ type: "event", text: "x".repeat(1000) });
+    data.finish({ ...outcome, text: "x".repeat(1000) });
+    const snapshot = data.snapshot();
+    assert.equal(snapshot.truncated, true);
+    assert.equal(snapshot.responses[0].complete, false);
+    assert.equal(snapshot.responses[0].payload.activities.length, 1);
+    assert(Buffer.byteLength(JSON.stringify(snapshot.responses)) <= 220);
+});
+
+test("conversation data retains the latest raw responses within its total budget without discarding chat messages", () => {
+    const data = new ConversationData(550);
+    const messages = [];
+    for (let turn = 0; turn < 20; turn++) {
+        messages.push({ role: "user", text: `Question ${turn}` });
+        data.begin("send");
+        data.activity({ type: "message", text: "x".repeat(30) });
+        data.finish({ ...outcome, turn });
+        const snapshot = data.snapshot(messages);
+        assert(Buffer.byteLength(JSON.stringify(snapshot.responses)) <= 550);
+        assert.equal(snapshot.responses.at(-1).payload.turn, turn);
+        assert.deepEqual(snapshot.messages, messages);
+    }
+    assert.equal(data.snapshot().truncated, true);
+    assert(data.snapshot().responses.length < 20);
+});
+
+test("chat debug includes received ask data and failure envelopes without activation and clears with a new chat", async () => {
+    for (const failed of [false, true]) {
+        const event = { type: "event", name: "ToolInvocation", value: { tool: "example" } };
+        const data = { ...outcome, activities: [event, ...outcome.activities],
+            ...(failed ? { success: false, status: "failed", exitCode: 1, queryDelivery: "attempted" } : {}) };
+        const { chat } = fixture((args, { onStdout }) => {
+            if (args[1] !== "ask" || args.includes("--help")) return;
+            onStdout('{"schemaVersion":"1","activities":[' + JSON.stringify(event));
+            assert.equal(chat.debugSnapshot().responses.at(-1).payload.activities[0].name, "ToolInvocation");
+            return json(data, failed ? 1 : 0);
+        });
+        await chat.start("check");
+        assert.deepEqual(chat.debugSnapshot().responses, []);
+        await chat.start("send", { query: "Hello" });
+        const debug = chat.debugSnapshot();
+        assert.equal(debug.responses[0].complete, true);
+        assert.equal(debug.responses[0].payload.status, failed ? "failed" : "completed");
+        assert.equal(debug.responses[0].payload.activities[0].name, "ToolInvocation");
+        assert.deepEqual(debug.messages, chat.snapshot().messages);
+        assert(!JSON.stringify(chat.snapshot()).includes("ToolInvocation"));
+        assert(!JSON.stringify(debug).includes(account.account));
+        await chat.start("reset");
+        assert.deepEqual(chat.debugSnapshot().responses, []);
+        assert.deepEqual(chat.debugSnapshot().messages, []);
+    }
+});
+
+test("debug projects the existing transcript and all response turns while replies stream and after completion", async () => {
+    const { chat } = fixture((args, { onStdout }) => {
+        if (args[1] !== "ask" || args.includes("--help")) return;
+        const activity = streamed("Partial answer", 1);
+        onStdout('{"schemaVersion":"1","activities":[' + JSON.stringify(activity));
+        const debug = chat.debugSnapshot();
+        assert.deepEqual(debug.messages, chat.snapshot().messages);
+        assert.equal(debug.messages.at(-1).streaming, true);
+        assert.deepEqual(debug.responses.at(-1).payload.activities, [activity]);
+        return json(outcome);
+    });
+    await chat.start("connect");
+    await chat.start("send", { query: "Question one" });
+    await chat.start("send", { query: "Question two" });
+    const debug = chat.debugSnapshot();
+    assert.deepEqual(debug.messages, chat.snapshot().messages);
+    assert.equal(debug.messages.length, 5);
+    assert.deepEqual(debug.responses.map(response => response.operation), ["connect", "send", "send"]);
+    assert(debug.responses.every(response => response.complete));
+    assert(debug.responses.every(response => JSON.stringify(response.payload) === JSON.stringify(outcome)));
+    assert(debug.messages.every(message => !message.streaming));
+    assert.deepEqual(debug.responses.map(response => response.turnId), [1, 2, 3]);
+    assert.deepEqual(debug.messages.map(message => message.turnId), [1, 2, 2, 3, 3]);
+    await chat.start("reset");
+    await chat.start("connect");
+    assert.equal(chat.snapshot().messages[0].turnId, 4);
+});
+
+test("uploads validate filenames, encoding, count and size and remove staged files even after failure", async () => {
+    const files = uploads([{ name: "study.xlsx", base64: "AQID" }]);
+    let staged;
+    await assert.rejects(withUploadedFiles(files, async paths => {
+        staged = paths[0];
+        assert.deepEqual(await readFile(staged), Buffer.from([1, 2, 3]));
+        assert(staged.endsWith("study.xlsx"));
+        throw new Error("Send failed");
+    }), /Send failed/);
+    await assert.rejects(access(staged));
+    assert.equal(uploads([{ name: "maximum.bin", base64: Buffer.alloc(10 * 1024 * 1024).toString("base64") }])[0].size, 10 * 1024 * 1024);
+    for (const input of [
+        [{ name: "../private", base64: "AQID" }], [{ name: "CON.txt", base64: "AQID" }],
+        [{ name: "file", base64: "***" }],
+        Array(6).fill({ name: "file", base64: "" }),
+        [{ name: "large", base64: Buffer.alloc(10 * 1024 * 1024 + 1).toString("base64") }],
+    ]) assert.throws(() => uploads(input));
+});
+
+test("download destinations reject private networks, credentials and non-HTTPS without network access", async () => {
+    for (const address of ["127.0.0.1", "10.1.2.3", "169.254.169.254", "192.168.1.1", "::1", "::ffff:127.0.0.1", "2002:7f00:1::"]) {
+        assert.equal(publicAddress(address), false);
+    }
+    assert.equal(publicAddress("8.8.8.8"), true);
+    assert.equal(publicAddress("2606:4700:4700::1111"), true);
+    for (const url of ["http://example.test/a", "https://127.0.0.1/a", "https://[::1]/a", "https://user:pass@example.test/a", "https://example.test:444/a"]) {
+        await assert.rejects(downloadPublicFile(url), /public HTTPS/);
+    }
+});
+
+test("returned files are downloaded only on demand and expired references are not replayed", async () => {
+    let calls = 0;
+    const files = new FileDownloads(async url => { calls++; assert.equal(url, "https://example.test/file"); return Buffer.from("result"); });
+    const link = files.add(1, { name: "result.csv", contentUrl: "https://example.test/file" });
+    assert.equal(calls, 0);
+    assert.deepEqual(files.add(1, { name: "result.csv", contentUrl: "https://example.test/file" }), link);
+    assert.equal((await files.download(link.id)).content.toString(), "result");
+    assert.equal(calls, 1);
+    const inline = files.add(2, { name: "inline.txt", contentUrl: "data:text/plain;base64,aGVsbG8=" });
+    assert.equal((await files.download(inline.id)).content.toString(), "hello");
+    files.clear();
+    await assert.rejects(files.download(link.id), /no longer available/);
+    assert.equal(calls, 1);
+});
+
+test("chat sends staged file paths once, keeps only upload metadata and exposes returned file bytes through the protected gateway", async () => {
+    let staged;
+    const result = { ...outcome, activities: [{ type: "message", attachments: [
+        { name: "answer.txt", contentType: "text/plain", contentUrl: "data:text/plain;base64,YW5zd2Vy" },
+    ] }] };
+    const { chat } = fixture(async args => {
+        if (args[1] !== "ask" || args.includes("--help")) return;
+        staged = args[args.indexOf("--file") + 1];
+        assert.equal((await readFile(staged)).toString(), "private document");
+        return json(result);
+    });
+    await chat.start("send", { query: "Analyze",
+        files: [{ name: "study.txt", base64: Buffer.from("private document").toString("base64") }] });
+    assert.equal(chat.snapshot().status, "ready");
+    await assert.rejects(access(staged));
+    assert.deepEqual(chat.snapshot().messages[0].files, [{ name: "study.txt", size: 16 }]);
+    assert(!JSON.stringify(chat.debugSnapshot()).includes(Buffer.from("private document").toString("base64")));
+    const file = chat.snapshot().messages.at(-1).files[0];
+    const server = await startServer(chat);
+    const url = new URL(server.url);
+    const headers = { Authorization: `Bearer ${url.hash.slice(1)}` };
+    try {
+        const address = `${url.origin}/files/${file.id}`;
+        assert.equal((await fetch(address)).status, 403);
+        assert.equal((await fetch(address, { headers: { ...headers, Origin: "https://attacker.test" } })).status, 403);
+        const response = await fetch(address, { headers });
+        assert.equal(response.status, 200);
+        assert.match(response.headers.get("content-disposition"), /attachment;.*answer.txt/);
+        assert.equal(await response.text(), "answer");
+        await chat.start("reset");
+        assert.equal((await fetch(address, { headers })).status, 400);
+    } finally { await server.close(); }
+});
+
+function markdownDocument() {
+    return {
+        createElement(tagName) {
+            return {
+                tagName, children: [],
+                append(...children) { this.children.push(...children); },
+                replaceChildren(...children) { this.children = children; },
+                set textContent(value) { this.children = [String(value)]; },
+                get textContent() { return this.children.map(child => typeof child === "string" ? child : child.textContent).join(""); },
+                set innerHTML(value) { throw new Error(`Unexpected HTML insertion: ${value}`); },
+            };
+        },
+    };
+}
+
+function descendants(node) {
+    return [node, ...node.children.filter(child => typeof child !== "string").flatMap(descendants)];
+}
+
+test("Markdown formats common reply blocks and inline text without inserting HTML", () => {
+    const root = renderMarkdown([
+        "# Study design", "", "**Blind** and *randomized* with `literal <code>`.", "",
+        "- Control", "- Prototype", "", "3. First", "4. Next", "",
+        "> A cautious claim", "", "---", "",
+        "| Condition | Temperature |", "| --- | ---: |", "| **Prototype** | 92 C |", "",
+        "```js", "<script>literal code</script>", "```",
+    ].join("\n"), markdownDocument());
+    const nodes = descendants(root);
+    for (const tag of ["h1", "strong", "em", "code", "ul", "ol", "li", "blockquote", "hr", "table", "th", "td", "pre"]) {
+        assert(nodes.some(node => node.tagName === tag), `Missing ${tag}`);
+    }
+    assert.equal(nodes.find(node => node.tagName === "ol").start, 3);
+    assert.equal(nodes.find(node => node.tagName === "strong").textContent, "Blind");
+    assert(nodes.some(node => node.tagName === "code" && node.textContent === "<script>literal code</script>"));
+    assert(!nodes.some(node => node.tagName === "script"));
+});
+
+test("Markdown treats raw HTML, images and executable links as inert text", () => {
+    const source = '<img src=x onerror=alert(1)><script>alert(1)</script>\n\n' +
+        '[bad](javascript:alert(1)) [data](data:text/html,evil) ![remote](https://attacker.test/tracker.png) ' +
+        '[source](https://example.test/research)';
+    const root = renderMarkdown(source, markdownDocument());
+    const nodes = descendants(root);
+    const links = nodes.filter(node => node.tagName === "a");
+    assert.equal(links.length, 1);
+    assert.equal(links[0].href, "https://example.test/research");
+    assert.equal(links[0].rel, "noopener noreferrer");
+    assert.equal(links[0].target, "_blank");
+    assert.equal(links[0].referrerPolicy, "no-referrer");
+    assert(!nodes.some(node => ["img", "script", "iframe", "style", "object"].includes(node.tagName)));
+    assert(root.textContent.includes("<script>alert(1)</script>"));
+    assert(root.textContent.includes("[bad](javascript:alert(1))"));
+    assert(root.textContent.includes("[Image: remote]"));
+});
+
+test("Markdown handles an unfinished streamed code fence and visibly bounds large or complex replies", () => {
+    const document = markdownDocument();
+    const partial = renderMarkdown("## Answer\n\n```js\nconst a = '<img>';", document);
+    assert.equal(descendants(partial).find(node => node.tagName === "pre").textContent, "const a = '<img>';");
+    const final = renderMarkdown("## Answer\n\n```js\nconst a = '<img>';\n```\n\n**Done**", document);
+    assert(descendants(final).some(node => node.tagName === "strong" && node.textContent === "Done"));
+    for (const source of ["x".repeat(100_001), "- item\n".repeat(2100)]) {
+        const root = renderMarkdown(source, document);
+        assert(root.children[0].textContent.includes("formatting limit"));
+        assert.equal(root.children[1].textContent, source);
+    }
+});
+
+test("activity reader handles arbitrary boundaries, escaped strings and nested metadata before the result closes", () => {
+    const activities = [
+        { type: "message", text: 'Braces } ], "quotes", \\ and coffee \u2615', value: { nested: [{ text: "[]" }] } },
+        streamed("Hello", 1),
+    ];
+    const prefix = '{"schemaVersion":"1","activities":[';
+    const body = activities.map(JSON.stringify).join(",");
+    for (let split = 0; split <= body.length; split++) {
+        const observed = [];
+        const reader = new ActivityReader(activity => observed.push(activity));
+        for (const character of prefix) reader.push(character);
+        reader.push(body.slice(0, split));
+        reader.push(body.slice(split));
+        assert.deepEqual(observed, activities);
+        reader.push('],"status":"completed"}');
+        assert.equal(reader.done, true);
+    }
+    const observed = [];
+    const reader = new ActivityReader(activity => observed.push(activity));
+    for (const character of prefix + body) reader.push(character);
+    assert.deepEqual(observed, activities);
+    for (const malformed of ['{"schemaVersion":"2","activities":[', prefix + "null", prefix + "{}{}"]) {
+        assert.throws(() => new ActivityReader(() => {}).push(malformed), /Invalid/);
+    }
+});
+
+test("reply snapshots replace cumulative text, ignore stale sequences and reconcile each final once", () => {
+    const reply = new ReplyStream([{ type: "message", text: "Greeting" }]);
+    reply.write(streamed("Hel", 1));
+    assert.deepEqual(reply.snapshot(), { text: "Greeting\n\nHel", partial: true, attachments: [] });
+    reply.write({ ...streamed("Hello", "2"), type: "typing" });
+    reply.write({ type: "typing", text: "hidden unrelated typing" });
+    reply.write(streamed("stale", 1));
+    reply.write(streamed("hidden reasoning", 3, "informative"));
+    reply.write({ type: "message", text: "hidden delta", delta: { text: "secret" } });
+    assert.deepEqual(reply.snapshot(), { text: "Greeting\n\nHello", partial: true, attachments: [] });
+    reply.write(streamed("Final answer", 3, "final"));
+    reply.write(streamed("duplicate", 3, "final"));
+    reply.write(streamed("late update", 4));
+    reply.write(streamed("Other answer", 1, "final", "other"));
+    assert.deepEqual(reply.snapshot(), { text: "Greeting\n\nFinal answer\n\nOther answer", partial: false, attachments: [] });
+    assert.throws(() => visibleMessages(undefined), /activities array/);
+});
+
+test("Copilot Studio delta chunks preserve the first anonymous fragment and whitespace until the final replacement", () => {
+    const reply = new ReplyStream([]);
+    const first = streamed("# Co", 1);
+    delete first.entities[0].streamId;
+    reply.write({ ...first, type: "typing", channelData: { chunkType: "delta" } });
+    assert.equal(reply.snapshot().text, "# Co");
+    for (const [text, sequence] of [["ffee", 2], ["\n\n", 3], ["**Study**", 4]]) {
+        reply.write({ ...streamed(text, sequence), type: "typing", channelData: { chunkType: "delta" } });
+    }
+    reply.write({ ...streamed("stale", 2), type: "typing", channelData: { chunkType: "delta" } });
+    assert.deepEqual(reply.snapshot(), { text: "# Coffee\n\n**Study**", partial: true, attachments: [] });
+    reply.write(streamed("# Coffee\n\n**Study** complete.", undefined, "final"));
+    reply.write(streamed("duplicate", undefined, "final"));
+    assert.deepEqual(reply.snapshot(), { text: "# Coffee\n\n**Study** complete.", partial: false, attachments: [] });
+    assert.equal(reply.parts.length, 1);
+});
+
+test("canvas gateway exposes a provisional reply while ask is still running and replaces it on completion", async () => {
+    let release;
+    let entered;
+    const gate = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { entered = resolve; });
+    const activities = [streamed("Hel", 1), streamed("Hello", 2), streamed("Hello world", 3, "final")];
+    const result = json({ ...outcome, activities });
+    const { chat } = fixture(async (args, { onStdout }) => {
+        if (args[1] !== "ask" || args.includes("--help")) return;
+        onStdout('{"schemaVersion":"1","activities":[' + JSON.stringify(activities[0]));
+        entered();
+        await gate;
+        onStdout("," + activities.slice(1).map(JSON.stringify).join(",") + '],"status":"completed"}');
+        return result;
+    });
+    const server = await startServer(chat);
+    const url = new URL(server.url);
+    const headers = { Authorization: `Bearer ${url.hash.slice(1)}` };
+    const turn = chat.start("send", { query: "Hello" });
+    try {
+        await started;
+        const during = await (await fetch(`${url.origin}/state`, { headers })).json();
+        assert.equal(during.busy, true);
+        assert.equal(during.messages.at(-1).text, "Hel");
+        assert.equal(during.messages.at(-1).streaming, true);
+        assert.equal(during.messages.at(-1).partial, true);
+        release();
+        await turn;
+        const after = await (await fetch(`${url.origin}/state`, { headers })).json();
+        assert.equal(after.status, "ready");
+        assert.equal(after.messages.length, 2);
+        assert.deepEqual(after.messages.at(-1), { role: "assistant", turnId: 1, text: "Hello world", partial: false, streaming: false });
+        assert.equal(chat.conversationId, "conversation-1");
+    } finally {
+        release();
+        await server.close();
+    }
+});
+
+test("truncated, failed, cancelled and invalid terminal results retain partial text without replay", async () => {
+    const activities = [streamed("Partial answer", 1)];
+    for (const failure of [
+        new Error("Cancelled"),
+        { code: 1, output: '{"schemaVersion":"1","activities":[' + JSON.stringify(activities[0]) },
+        json({ ...outcome, success: false, status: "failed", queryDelivery: "attempted", activities }, 1),
+        json({ ...outcome, conversationId: "../unsafe", activities }),
+    ]) {
+        const { chat, calls } = fixture((args, { onStdout }) => {
+            if (args[1] !== "ask" || args.includes("--help")) return;
+            onStdout('{"schemaVersion":"1","activities":[' + JSON.stringify(activities[0]));
+            if (failure instanceof Error) throw failure;
+            return failure;
+        });
+        await chat.start("send", { query: "Hello" });
+        assert.equal(chat.state.status, "uncertain");
+        assert.equal(chat.state.messages.length, 2);
+        assert.deepEqual(chat.state.messages.at(-1), {
+            role: "assistant", turnId: 1, text: "Partial answer", partial: true, streaming: false,
+        });
+        assert.equal(chat.conversationId, undefined);
+        await chat.start("send", { query: "Do not replay" });
+        assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 1);
+    }
+});
+
+test("a completed CLI result without a final text snapshot remains visibly incomplete", async () => {
+    const { chat } = fixture(args => args[1] === "ask" && !args.includes("--help")
+        ? json({ ...outcome, activities: [streamed("Unfinished", 1)] }) : undefined);
+    await chat.start("send", { query: "Hello" });
+    assert.equal(chat.state.messages.at(-1).text, "Unfinished");
+    assert.equal(chat.state.messages.at(-1).partial, true);
+    assert.equal(chat.state.messages.at(-1).streaming, false);
+});
+
+test("streaming transcript overflow retains the last bounded partial reply", async () => {
+    const { chat } = fixture((args, { onStdout }) => {
+        if (args[1] !== "ask" || args.includes("--help")) return;
+        onStdout('{"schemaVersion":"1","activities":[' + JSON.stringify(streamed("Partial answer", 1)));
+        onStdout("," + JSON.stringify(streamed("x".repeat(1_000_001), 2)));
+        return json(outcome);
+    });
+    await chat.start("send", { query: "Hello" });
+    assert.equal(chat.state.status, "uncertain");
+    assert.equal(chat.state.messages.at(-1).text, "Partial answer");
+    assert.equal(chat.state.messages.at(-1).partial, true);
+    assert(JSON.stringify(chat.state.messages).length <= 1_000_000);
+});
+
+test("process stdout callbacks receive activities before process exit and callback failure stops the child", async () => {
+    const controller = new AbortController();
+    let observed = "";
+    await assert.rejects(runCommand(process.execPath, ["-e", "process.stdout.write('early');setInterval(()=>{},1000)"], {
+        signal: controller.signal,
+        onStdout(text) { observed += text; controller.abort(); },
+    }), /Cancelled/);
+    assert.equal(observed, "early");
+    await assert.rejects(runCommand(process.execPath, ["-e", "process.stdout.write('invalid');setInterval(()=>{},1000)"], {
+        onStdout() { throw new Error("sensitive raw data"); },
+    }), error => /activity stream/.test(error.message) && !error.message.includes("sensitive"));
+});
+
+async function uiFixture(state, respond = () => undefined) {
+    state.connected ??= true;
+    const nodes = new Map();
+    const node = tagName => Object.assign(markdownDocument().createElement(tagName), { value: "", checked: false, disabled: false, events: {},
+        addEventListener(event, handler) { this.events[event] = handler; },
+        setAttribute(name, value) { this[name] = value; },
+        scrollIntoView(options) { this.scrolled = options; },
+        focus() { document.activeElement = this; },
+        click() { this.clicked = true; },
+        requestSubmit() { this.submitted = this.events.submit({ preventDefault() {} }); } });
+    const get = id => {
+        if (!nodes.has(id)) nodes.set(id, node());
+        return nodes.get(id);
+    };
+    const timers = [];
+    const calls = [];
+    const fetch = async (route, options) => {
+        calls.push(route);
+        const custom = await respond(route, options);
+        if (custom !== undefined) return custom;
+        return { ok: true, json: async () => structuredClone(route === "/state" ? state : { accepted: true }) };
+    };
+    const script = (await readFile(new URL("app.js", import.meta.url), "utf8")).replace(/^import .*;\n/, "");
+    const document = { getElementById: get, createElement: node };
+    runInNewContext(script, {
+        document, location: { hash: "#fixture" }, fetch,
+        FileReader: class {
+            readAsDataURL(file) { this.result = `data:application/octet-stream;base64,${file.base64}`; this.onload(); }
+        },
+        setTimeout(callback) { timers.push(callback); }, renderMarkdown,
+    });
+    await new Promise(setImmediate);
+    return { get, calls, document, async refresh() { await timers.shift()(); } };
+}
+
+test("message ellipses jump to the matching raw response or input even for repeated text and pruned response history", async () => {
+    const state = { status: "ready", busy: false, target, error: null, debugRevision: 1, messages: [
+        { role: "assistant", turnId: 1, text: "Same text" }, { role: "user", turnId: 2, text: "Same text" },
+        { role: "assistant", turnId: 2, text: "Same text" },
+    ] };
+    const data = { revision: 1, messages: state.messages, responses: [
+        { turnId: 1, complete: true, payload: outcome }, { turnId: 2, complete: true, payload: outcome },
+    ], truncated: false };
+    const { get, document, calls, refresh } = await uiFixture(state, (route, options) => {
+        assert.equal(options.method, "GET");
+        if (route === "/debug") return { ok: true, json: async () => data };
+    });
+    const inspect = index => descendants(get("messages").children[index]).find(node => node.tagName === "button" && node.textContent === "View debug");
+    const menu = descendants(get("messages").children[2]).find(node => node.tagName === "details");
+    menu.open = true;
+    state.messages[2].streaming = true;
+    await refresh();
+    assert.equal(descendants(get("messages").children[2]).find(node => node.tagName === "details"), menu);
+    await inspect(2).events.click();
+    assert.equal(menu.open, false);
+    assert.equal(get("debug-view").hidden, false);
+    assert.equal(document.activeElement.id, "debug-response-2");
+    assert.equal(document.activeElement.scrolled.block, "start");
+    assert.deepEqual(JSON.parse(get("debug-output").textContent).messages, state.messages);
+    await get("view-chat").events.click();
+    await inspect(1).events.click();
+    assert.equal(document.activeElement.id, "debug-message-2-user");
+    await get("view-chat").events.click();
+    data.responses.pop();
+    data.revision = ++state.debugRevision;
+    data.truncated = true;
+    await inspect(2).events.click();
+    assert.equal(document.activeElement.id, "debug-message-2-assistant");
+    assert.match(get("debug-status").textContent, /omitted/);
+    assert(calls.every(route => route === "/state" || route === "/debug"));
+    state.messages = [];
+    data.messages = [];
+    data.responses = [];
+    data.truncated = false;
+    data.revision = ++state.debugRevision;
+    await refresh();
+    assert.equal(get("debug-output").textContent.includes("Same text"), false);
+    assert.equal(get("error").hidden, true);
+});
+
+test("reply bubbles use the selected agent name and update without changing messages", async () => {
+    const state = { status: "ready", busy: false, target, agentName: "Coffee Research Lab", messages: [
+        { role: "user", text: "Hello" }, { role: "assistant", text: "Welcome", streaming: true },
+        { role: "assistant", text: "Interrupted", partial: true },
+    ], error: null };
+    const { get, refresh, calls } = await uiFixture(state);
+    const headings = () => get("messages").children.map(article => article.children[0].children[0].textContent);
+    assert.deepEqual(headings(), ["You", "Coffee Research Lab · Streaming...", "Coffee Research Lab · Incomplete"]);
+    state.agentName = "<img src=x onerror=alert(1)>";
+    await refresh();
+    assert.equal(headings()[1], "<img src=x onerror=alert(1)> · Streaming...");
+    assert.equal(descendants(get("messages").children[1].children[0]).some(node => node.tagName === "img"), false);
+    delete state.agentName;
+    await refresh();
+    assert.equal(headings()[1], `${target.schemaName} · Streaming...`);
+    assert(calls.every(route => route === "/state"));
+});
+
+test("selected files stay local until send and rejected sends restore untouched attachments", async () => {
+    const state = { status: "ready", busy: false, target, messages: [], error: null };
+    let input;
+    const { get, calls } = await uiFixture(state, (route, options) => {
+        if (route === "/send") {
+            input = JSON.parse(options.body);
+            return { ok: false, json: async () => ({ error: "Not delivered" }) };
+        }
+    });
+    get("files").files = [{ name: "study.txt", size: 3, base64: "AQID" }];
+    await get("files").events.change();
+    assert.equal(get("pending-files").children.length, 1);
+    assert(calls.every(route => route === "/state"));
+    get("query").value = "Analyze";
+    get("query").events.input();
+    await get("composer").events.submit({ preventDefault() {} });
+    assert.deepEqual(input.files, [{ name: "study.txt", base64: "AQID" }]);
+    assert.equal(get("query").value, "Analyze");
+    assert.equal(get("pending-files").children.length, 1);
+    await descendants(get("pending-files")).find(node => node.tagName === "button").events.click();
+    assert.equal(get("pending-files").children.length, 0);
+});
+
+test("composer clears immediately and Enter sends once while Shift+Enter and IME keep native behavior", async () => {
+    const state = { status: "ready", busy: false, target, messages: [], error: null };
+    let sends = 0;
+    const { get } = await uiFixture(state, route => {
+        if (route === "/send") {
+            sends++;
+            state.messages.push({ role: "user", text: "Hello" }, { role: "assistant", text: "Hi" });
+        }
+    });
+    get("query").value = "Hello";
+    get("query").events.input();
+    const enter = get("query").events.keydown;
+    for (const modifier of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
+        enter({ key: "Enter", ...modifier, preventDefault() { assert.fail("Native multiline/composition behavior should be preserved"); } });
+    }
+    assert.equal(get("send").disabled, false);
+    enter({ key: "Enter", repeat: true, preventDefault() {} });
+    assert.equal(sends, 0);
+    enter({ key: "Enter", preventDefault() {} });
+    assert.equal(get("query").value, "");
+    assert.equal(get("send").disabled, true);
+    assert.equal(get("typing").hidden, false);
+    await get("composer").events.submit({ preventDefault() {} });
+    await get("composer").submitted;
+    assert.equal(sends, 1);
+    assert.equal(get("query").value, "");
+    assert.equal(get("typing").hidden, true);
+});
+
+test("typing indicator tracks send operations, not status checks, and ends on failure", async () => {
+    const state = { status: "ready", busy: false, operation: null, target, messages: [], error: null };
+    const { get, refresh } = await uiFixture(state);
+    assert.equal(get("typing").hidden, true);
+    state.busy = true;
+    state.operation = "check";
+    await refresh();
+    assert.equal(get("typing").hidden, true);
+    state.operation = "send";
+    await refresh();
+    assert.equal(get("typing").hidden, false);
+    assert.equal(get("typing-text").textContent, "Waiting for Copilot Studio");
+    state.messages.push({ role: "assistant", text: "Partial", streaming: true });
+    await refresh();
+    assert.equal(get("typing-text").textContent, "Copilot Studio is replying");
+    state.busy = false;
+    state.operation = null;
+    state.error = "Cancelled";
+    await refresh();
+    assert.equal(get("typing").hidden, true);
+});
+
+test("failed sends restore only an untouched draft and never overwrite a new or intentionally emptied draft", async () => {
+    for (const edit of [null, "Next message", ""]) {
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        const state = { status: "ready", busy: false, target, messages: [], error: null };
+        const { get } = await uiFixture(state, async route => {
+            if (route === "/send") {
+                await gate;
+                return { ok: false, json: async () => ({ error: "Send rejected" }) };
+            }
+        });
+        get("query").value = "Original";
+        get("query").events.input();
+        const submit = get("composer").events.submit({ preventDefault() {} });
+        assert.equal(get("query").value, "");
+        if (edit !== null) {
+            get("query").value = edit;
+            get("query").events.input();
+        }
+        release();
+        await submit;
+        assert.equal(get("query").value, edit ?? "Original");
+        assert.equal(get("typing").hidden, true);
+    }
+});
+
+test("New chat and Send remain available when CLI sign-in is required", async () => {
+    const state = { status: "authentication-required", busy: false, connected: false, target, messages: [], error: null };
+    const { get, refresh, calls } = await uiFixture(state);
+    const html = await readFile(new URL("index.html", import.meta.url), "utf8");
+    assert(!html.includes('id="login"'));
+    assert.equal(get("status").textContent, "Signed out");
+    assert.equal(get("new-chat").disabled, false);
+    assert.equal(get("send").disabled, true);
+    await get("new-chat").events.click();
+    assert(calls.includes("/reset"));
+    state.connected = true;
+    get("query").value = "Try again";
+    get("query").events.input();
+    await refresh();
+    assert.equal(get("send").disabled, false);
+    await get("composer").events.submit({ preventDefault() {} });
+    assert(calls.includes("/send"));
+    state.status = "ready";
+    await refresh();
+    assert.equal(get("status").textContent, "Ready");
+    assert(!calls.includes("/login"));
+});
+
+test("Chat and Debug switch over already received conversation data using only read requests and preserve the draft", async () => {
+    const state = { status: "ready", busy: false, target, messages: [{ role: "assistant", text: "Earlier reply" }],
+        error: null, debugRevision: 1 };
+    const { get, calls } = await uiFixture(state, (route, options) => {
+        assert.equal(options.method, "GET");
+        if (route === "/debug") return { ok: true, json: async () => ({
+            revision: state.debugRevision, messages: state.messages, truncated: false,
+            responses: [{ complete: true, payload: { activities: [{ type: "event", text: "<script>alert(1)</script>" }] } }],
+        }) };
+    });
+    assert.equal(get("debug-view").hidden, true);
+    assert.equal(get("chat-view").hidden, false);
+    assert(!calls.includes("/debug"));
+    get("query").value = "My next question";
+    await get("view-debug").events.click();
+    assert.equal(get("debug-view").hidden, false);
+    assert.equal(get("chat-view").hidden, true);
+    assert.equal(get("view-debug")["aria-pressed"], "true");
+    assert.match(get("debug-output").textContent, /<script>alert\(1\)<\/script>/);
+    assert.match(get("debug-status").textContent, /Current conversation data/);
+    assert.deepEqual(JSON.parse(get("debug-output").textContent).messages, state.messages);
+    await get("view-chat").events.click();
+    assert.equal(get("debug-view").hidden, true);
+    assert.equal(get("chat-view").hidden, false);
+    await get("view-debug").events.click();
+    assert.equal(get("debug-view").hidden, false);
+    assert(calls.every(route => route === "/state" || route === "/debug"));
+    assert.equal(get("query").value, "My next question");
+});
+
+test("Debug can first open during streaming and follows the same transcript through finalization", async () => {
+    const state = { status: "ready", busy: false, target, messages: [], error: null, debugRevision: 1 };
+    const { get, refresh, calls } = await uiFixture(state, route => route === "/debug"
+        ? { ok: true, json: async () => ({ revision: state.debugRevision, messages: state.messages, truncated: false,
+            responses: [{ complete: !state.busy, payload: { activities: [] } }] }) }
+        : undefined);
+    state.busy = true;
+    state.operation = "send";
+    state.messages.push({ role: "assistant", text: "Partial", streaming: true });
+    await refresh();
+    assert.equal(get("view-debug").disabled, false);
+    await get("view-debug").events.click();
+    assert.equal(get("debug-view").hidden, false);
+    assert.equal(get("chat-view").hidden, true);
+    assert.deepEqual(JSON.parse(get("debug-output").textContent).messages, state.messages);
+    assert.match(get("debug-status").textContent, /Live conversation data/);
+    state.busy = false;
+    state.messages[0] = { role: "assistant", text: "Final", streaming: false };
+    state.debugRevision++;
+    await refresh();
+    assert.deepEqual(JSON.parse(get("debug-output").textContent).messages, state.messages);
+    assert(calls.every(route => route === "/state" || route === "/debug"));
+    await get("view-chat").events.click();
+    assert.equal(get("chat-view").hidden, false);
+});
+
+test("debug search finds literal text case-insensitively and navigates without changing the JSON or draft", async () => {
+    const state = { status: "ready", busy: false, target, messages: [
+        { role: "user", turnId: 1, text: "İ Token token <script>" },
+    ], error: null, debugRevision: 1 };
+    const debug = { revision: 1, messages: state.messages, truncated: false, responses: [
+        { turnId: 1, complete: true, payload: { text: "TOKEN", literal: ".*" } },
+    ] };
+    const { get, calls } = await uiFixture(state, (route, options) => {
+        assert.equal(options.method, "GET");
+        if (route === "/debug") return { ok: true, json: async () => debug };
+    });
+    const marks = () => descendants(get("debug-output")).filter(node => node.tagName === "mark");
+    const search = get("debug-search");
+    get("query").value = "Unsent draft";
+    await get("view-debug").events.click();
+    const original = get("debug-output").textContent;
+    search.value = "tOkEn";
+    search.events.input();
+    assert.equal(get("debug-search-count").textContent, "1 of 3");
+    assert.equal(marks()[0].textContent, "Token");
+    assert.equal(marks()[0].scrolled.block, "center");
+    assert.equal(get("debug-next").disabled, false);
+    get("debug-next").events.click();
+    assert.equal(get("debug-search-count").textContent, "2 of 3");
+    assert.equal(marks()[0].textContent, "token");
+    search.events.keydown({ key: "Enter", preventDefault() {} });
+    assert.equal(get("debug-search-count").textContent, "3 of 3");
+    assert.equal(marks()[0].textContent, "TOKEN");
+    get("debug-next").events.click();
+    assert.equal(get("debug-search-count").textContent, "1 of 3");
+    search.events.keydown({ key: "Enter", shiftKey: true, preventDefault() {} });
+    assert.equal(get("debug-search-count").textContent, "3 of 3");
+    get("debug-previous").events.click();
+    assert.equal(get("debug-search-count").textContent, "2 of 3");
+    search.events.keydown({ key: "Enter", isComposing: true, preventDefault() { assert.fail("IME input should remain native"); } });
+    assert.equal(get("debug-search-count").textContent, "2 of 3");
+    search.value = ".*";
+    search.events.input();
+    assert.equal(get("debug-search-count").textContent, "1 of 1");
+    assert.equal(marks()[0].textContent, ".*");
+    search.value = "<script>";
+    search.events.input();
+    assert.equal(marks()[0].textContent, "<script>");
+    assert(!descendants(get("debug-output")).some(node => node.tagName === "script"));
+    search.value = "not present";
+    search.events.input();
+    assert.equal(get("debug-search-count").textContent, "No matches");
+    assert.equal(get("debug-next").disabled, true);
+    assert.equal(marks().length, 0);
+    search.events.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(search.value, "");
+    assert.equal(get("debug-search-count").textContent, "");
+    assert.equal(get("debug-output").textContent, original);
+    assert.deepEqual(JSON.parse(original), { messages: debug.messages, responses: debug.responses, truncated: false });
+    assert.equal(get("query").value, "Unsent draft");
+    assert(calls.every(route => route === "/state" || route === "/debug"));
+});
+
+test("debug search highlights matches across JSON segments and remains bounded for many results", async () => {
+    const state = { status: "ready", busy: false, target, messages: [], error: null, debugRevision: 1 };
+    const debug = { revision: 1, messages: [], responses: [], truncated: false };
+    const { get, refresh } = await uiFixture(state, route => route === "/debug"
+        ? { ok: true, json: async () => debug } : undefined);
+    await get("view-debug").events.click();
+    const marks = () => descendants(get("debug-output")).filter(node => node.tagName === "mark");
+    const search = get("debug-search");
+    search.value = "[]";
+    search.events.input();
+    assert.equal(get("debug-search-count").textContent, "1 of 2");
+    assert.equal(marks().map(mark => mark.textContent).join(""), "[]");
+    assert.equal(marks().length, 2);
+    assert.deepEqual(JSON.parse(get("debug-output").textContent).messages, []);
+    get("debug-next").events.click();
+    assert.equal(get("debug-search-count").textContent, "2 of 2");
+    assert.equal(marks().map(mark => mark.textContent).join(""), "[]");
+
+    debug.responses.push({ turnId: 1, payload: { text: "a".repeat(1_000_000) } });
+    debug.revision = ++state.debugRevision;
+    await refresh();
+    search.value = "a";
+    search.events.input();
+    const text = get("debug-output").textContent;
+    let total = 0;
+    for (let index = text.indexOf("a"); index !== -1; index = text.indexOf("a", index + 1)) total++;
+    assert.equal(get("debug-search-count").textContent, `1 of ${total}`);
+    assert.equal(marks().length, 1);
+    get("debug-previous").events.click();
+    assert.equal(get("debug-search-count").textContent, `${total} of ${total}`);
+    assert.equal(marks().length, 1);
+    assert.equal(JSON.parse(get("debug-output").textContent).responses[0].payload.text.length, 1_000_000);
+});
+
+test("debug search tracks streamed data and coexists with bubble-to-debug navigation", async () => {
+    const state = { status: "ready", busy: true, operation: "send", target,
+        messages: [{ role: "assistant", turnId: 1, text: "needle", streaming: true }], error: null, debugRevision: 1 };
+    const debug = { revision: 1, messages: state.messages, truncated: false,
+        responses: [{ turnId: 1, complete: false, payload: { text: "needle" } }] };
+    const { get, document, refresh } = await uiFixture(state, route => route === "/debug"
+        ? { ok: true, json: async () => debug } : undefined);
+    await get("view-debug").events.click();
+    const search = get("debug-search");
+    search.value = "needle";
+    search.events.input();
+    get("debug-next").events.click();
+    assert.equal(get("debug-search-count").textContent, "2 of 2");
+    state.messages[0].text = "needle needle";
+    debug.revision = ++state.debugRevision;
+    await new Promise(resolve => setTimeout(resolve, 550));
+    await refresh();
+    assert.equal(get("debug-search-count").textContent, "2 of 3");
+    assert.equal(descendants(get("debug-output")).find(node => node.tagName === "mark").scrolled, undefined);
+    assert.deepEqual(JSON.parse(get("debug-output").textContent).messages, state.messages);
+    await get("view-chat").events.click();
+    const inspect = descendants(get("messages").children[0]).find(node => node.tagName === "button" && node.textContent === "View debug");
+    await inspect.events.click();
+    assert.equal(document.activeElement.id, "debug-response-1");
+    assert.equal(search.value, "needle");
+    assert.equal(get("debug-search-count").textContent, "2 of 3");
+    state.busy = false;
+    state.messages = [];
+    debug.messages = [];
+    debug.responses = [];
+    debug.revision = ++state.debugRevision;
+    await refresh();
+    assert.equal(get("debug-search-count").textContent, "No matches");
+    assert.equal(get("debug-next").disabled, true);
+    assert.equal(get("error").hidden, true);
+});
+
+test("Connect starts ask without extra approval or a query and only its returned conversation is continued", async () => {
+    const { chat, calls } = fixture();
+    await chat.start("check");
+    assert.equal(chat.snapshot().connected, false);
+    assert(!calls.some(args => args[1] === "ask" && !args.includes("--help")));
+    await chat.start("connect", { query: "Must not be sent" });
+    assert(!calls.some(args => args[1] === "login" && !args.includes("--help")));
+    const start = calls.filter(args => args[1] === "ask" && !args.includes("--help"));
+    assert.equal(start.length, 1);
+    assert(start[0].includes("--start-conversation"));
+    assert(!start[0].includes("--query"));
+    assert(!start[0].includes("--conversation-id"));
+    assert.equal(chat.snapshot().connected, true);
+    assert(chat.snapshot().messages.every(message => message.role === "assistant"));
+    assert.throws(() => chat.start("connect"), /Already connected/);
+    await chat.start("send", { query: "My first question" });
+    const query = calls.filter(args => args[1] === "ask" && !args.includes("--help")).at(-1);
+    assert(!query.includes("--start-conversation"));
+    assert.equal(query[query.indexOf("--conversation-id") + 1], "conversation-1");
+    await chat.start("reset", { reconnect: true });
+    const reset = calls.filter(args => args[1] === "ask" && !args.includes("--help")).at(-1);
+    assert(reset.includes("--start-conversation"));
+    assert(!reset.includes("--conversation-id"));
+    assert(chat.snapshot().messages.every(message => message.role === "assistant"));
+});
+
+test("failed connection starts are not replayed even when no query was attempted", async () => {
+    const { chat, calls } = fixture(args => args[1] === "ask" && !args.includes("--help")
+        ? json({ ...outcome, success: false, status: "failed", exitCode: 1, queryDelivery: "not-attempted" }, 1)
+        : undefined);
+    await chat.start("connect");
+    assert.equal(chat.snapshot().status, "uncertain");
+    assert.equal(chat.snapshot().connected, false);
+    await chat.start("connect");
+    assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 1);
+});
+
+test("New chat is the only conversation control and preserves composed text", async () => {
+    const html = await readFile(new URL("index.html", import.meta.url), "utf8");
+    assert.match(html, /<button id="new-chat"[^>]*>New chat<\/button>\s*<details id="connection">/);
+    assert(!html.includes('id="connect"'));
+    assert(!html.includes('id="reset"'));
+    assert(!html.includes('<label for="query">'));
+    const state = { status: "ready", busy: true, operation: "connect", connected: false, target, messages: [], error: null };
+    const { get, refresh, calls } = await uiFixture(state, (route, options) => {
+        if (route === "/reset") {
+            assert.equal(JSON.parse(options.body).reconnect, true);
+            state.busy = true;
+            state.operation = "connect";
+        }
+    });
+    assert.equal(get("typing").hidden, false);
+    assert.equal(get("new-chat").disabled, true);
+    get("query").value = "My first question";
+    get("query").events.input();
+    assert.equal(get("send").disabled, true);
+    state.busy = false;
+    state.connected = true;
+    state.operation = null;
+    state.messages.push({ role: "assistant", text: "Welcome" });
+    await refresh();
+    assert.equal(get("query").value, "My first question");
+    assert.equal(get("new-chat").disabled, false);
+    assert.equal(get("send").disabled, false);
+    await get("new-chat").events.click();
+    assert.equal(get("typing").hidden, false);
+    assert.equal(calls.filter(route => route === "/reset").length, 1);
+    assert(!calls.includes("/connect"));
+    state.busy = false;
+    state.connected = false;
+    state.status = "uncertain";
+    state.operation = null;
+    await refresh();
+    assert.equal(get("new-chat").disabled, false);
+});
+
+function fixture(override = () => undefined, selected = target) {
+    const calls = [];
+    const runner = async (executable, args, options) => {
+        calls.push(args);
+        const custom = await override(args, options);
+        if (custom !== undefined) return custom;
+        if (args.includes("--help")) return { code: 0, output: help };
+        if (args[0] === "auth") return json(account);
+        return json(outcome);
+    };
+    return { chat: new Chat(process.execPath, selected, runner), calls };
+}
+
+test("panels with the same chat ID keep their conversations independent", async () => {
+    const fixtures = [];
+    const closed = [];
+    const registry = new ChatRegistry(async input => {
+        const current = fixture(() => undefined, input.target);
+        fixtures.push(current);
+        return { chat: current.chat, server: { close: async () => { closed.push(current); } } };
+    });
+    const input = { chatId: "shared", target };
+    const [one, two] = await Promise.all([registry.open("one", input), registry.open("two", input)]);
+    assert.equal(fixtures.length, 2);
+    assert.notEqual(one, two);
+    await Promise.all([one.chat.start("connect"), two.chat.start("connect")]);
+    await two.chat.start("send", { query: "Keep this conversation" });
+    const before = two.chat.snapshot();
+    await one.chat.start("reset", { reconnect: true });
+    assert.deepEqual(two.chat.snapshot(), before);
+    assert.equal(fixtures[0].calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 2);
+    assert.equal(fixtures[1].calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 2);
+    assert.equal(await registry.open("one", { ...input, agentName: "Test agent" }), one);
+    assert.equal(one.chat.snapshot().agentName, "Test agent");
+    assert.equal(two.chat.snapshot().agentName, undefined);
+    const three = await registry.open("three", { ...input, target: { ...target, schemaName: "other" } });
+    assert.notEqual(three, one);
+    await assert.rejects(registry.open("one", { ...input, chatId: "other" }), /new panel/);
+    await registry.close("one");
+    assert.deepEqual(closed, [fixtures[0]]);
+    assert.equal((await registry.status("two")).messageCount, before.messages.length);
+    await registry.close("two");
+    await assert.rejects(registry.status("two"), /closed/);
+    assert((await registry.closeAll()).every(result => result.status === "fulfilled"));
+    assert.deepEqual(closed, fixtures);
+});
+
+test("canvas starts are tracked independently across restart and released when closed", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "started-chats-"));
+    try {
+        const first = new StartedChats(directory);
+        const peer = new StartedChats(directory);
+        const claims = await Promise.all([first.claim("session-1", "panel.a"), peer.claim("session-1", "panel.a")]);
+        assert.deepEqual(claims.sort(), [false, true]);
+        assert.equal(await first.claim("session-1", "panel-b"), true);
+        assert.equal(await first.claim("session-2", "panel.a"), true);
+        const restarted = new StartedChats(directory);
+        assert.equal(await restarted.claim("session-1", "panel.a"), false);
+        assert.equal(await restarted.claim("session-1", "panel-b"), false);
+        assert.equal(await restarted.claim("session-1", "panel-c"), true);
+        assert.equal(await restarted.release("session-1", "panel.a"), true);
+        assert.equal(await restarted.claim("session-1", "panel.a"), true);
+        assert.equal(await restarted.claim("session-1", "panel-b"), false);
+        await assert.rejects(restarted.claim("", "panel-a"), /Invalid canvas/);
+        await writeFile(path.join(directory, "blocked-session"), "not a directory");
+        await assert.rejects(restarted.claim("blocked-session", "panel-a"));
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("new panels start independently, while restored panels wait for New chat", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "started-chats-"));
+    try {
+        const started = new StartedChats(directory);
+        const registry = () => new ChatRegistry(async (input, context) => {
+            const { chat, calls } = fixture();
+            if (await started.claim(context.sessionId, context.instanceId)) await chat.start("connect");
+            else chat.state.restored = true;
+            return { chat, calls, server: { close: async () => {} } };
+        }, (instanceId, context) => started.release(context.sessionId, instanceId));
+        const input = { chatId: "shared", target };
+        const context = { sessionId: "session-1" };
+        const initial = registry();
+        const [one, two] = await Promise.all([initial.open("one", input, context), initial.open("two", input, context)]);
+        const starts = resource => resource.calls.filter(args => args[1] === "ask" && !args.includes("--help")).length;
+        assert.equal(starts(one), 1);
+        assert.equal(starts(two), 1);
+        await initial.closeAll();
+
+        const restored = registry();
+        const [oldOne, oldTwo] = await Promise.all([restored.open("one", input, context), restored.open("two", input, context)]);
+        assert.equal(oldOne.chat.snapshot().restored, true);
+        assert.equal(oldTwo.chat.snapshot().restored, true);
+        assert.equal(starts(oldOne), 0);
+        assert.equal(starts(oldTwo), 0);
+        await restored.close("one");
+        const fresh = await restored.open("one", input, context);
+        assert.equal(starts(fresh), 1);
+        assert.equal(starts(oldTwo), 0);
+        await restored.close("one");
+        await restored.close("two");
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("registry passes the open context to chat creation", async () => {
+    const { chat } = fixture();
+    let received;
+    const registry = new ChatRegistry(async (input, context) => { received = context; return { chat, server: { close: async () => {} } }; });
+    await registry.open("one", { chatId: "context", target }, { sessionId: "session-1" });
+    assert.deepEqual(received, { sessionId: "session-1", instanceId: "one" });
+    await registry.closeAll();
+});
+
+test("reopening a closed panel waits for its cleanup", async () => {
+    let release;
+    const blocked = new Promise(resolve => { release = resolve; });
+    let created = 0;
+    let cleaned = 0;
+    const registry = new ChatRegistry(
+        async () => { created++; return { server: { close: async () => {} } }; },
+        async () => { if (++cleaned === 1) await blocked; });
+    const input = { chatId: "same", target };
+    await registry.open("one", input);
+    const closing = registry.close("one");
+    const reopening = registry.open("one", input);
+    await Promise.resolve();
+    assert.equal(created, 1);
+    release();
+    await closing;
+    await reopening;
+    assert.equal(created, 2);
+    await registry.closeAll();
+});
+
+test("failed startup can retry and closing a starting panel does not leak its backend", async () => {
+    let release;
+    let closed = 0;
+    const resource = { server: { close: async () => { closed++; } } };
+    const registry = new ChatRegistry(() => new Promise(resolve => { release = resolve; }));
+    const opening = registry.open("one", { chatId: "starting", target });
+    const rejected = assert.rejects(opening, /closed during startup/);
+    await Promise.resolve();
+    const closing = registry.close("one");
+    release(resource);
+    await Promise.all([closing, rejected]);
+    assert.equal(closed, 1);
+    let attempts = 0;
+    const retry = new ChatRegistry(async () => {
+        if (++attempts === 1) throw new Error("Cannot start");
+        return resource;
+    });
+    await assert.rejects(retry.open("one", { chatId: "retry", target }), /Cannot start/);
+    await retry.open("one", { chatId: "retry", target });
+    await retry.close("one");
+    assert.equal(attempts, 2);
+    assert.equal(closed, 2);
+});
+
+test("asks once per turn with literal arguments and continues only the returned conversation", async () => {
+    const { chat, calls } = fixture();
+    const query = "'; $(touch not-a-command) \n literal";
+    await chat.start("check");
+    assert.equal(chat.state.status, "ready");
+    for (const invalid of ["", " ", "x".repeat(16_001), "\0"]) {
+        assert.throws(() => chat.start("send", { query: invalid }), /message of at most/);
+    }
+    await chat.start("send", { query });
+    await chat.start("send", { query: "Next" });
+    const sends = calls.filter(args => args[0] === "test" && !args.includes("--help"));
+    assert.equal(sends.length, 2);
+    assert.equal(sends[0][sends[0].indexOf("--query") + 1], query);
+    assert(!sends[0].includes("--conversation-id"));
+    assert.equal(sends[1].at(-1), "conversation-1");
+    assert.equal(chat.state.messages.length, 4);
+    assert(sends.every(args => args.includes("--non-interactive") && args.includes("--json")));
+});
+
+test("Connect never runs sign-in and starts after an external CLI login", async () => {
+    let signedIn = false;
+    const { chat, calls } = fixture(args => {
+        if (args[0] === "auth" && args[1] === "status") {
+            return json(signedIn ? account : { success: true, signedIn: false });
+        }
+    });
+    await chat.start("check");
+    assert.equal(chat.state.status, "authentication-required");
+    await chat.start("connect");
+    assert.equal(chat.state.status, "authentication-required");
+    assert.match(chat.state.error, /signed out/);
+    assert(!calls.some(args => args[1] === "ask" && !args.includes("--help")));
+    signedIn = true;
+    await chat.start("connect");
+    assert.equal(chat.state.status, "ready");
+    assert.equal(chat.snapshot().connected, true);
+    assert(!calls.some(args => args[0] === "auth" && args[1] === "login"));
+});
+
+test("identity changes stop continuation and require explicit reset", async () => {
+    let current = account;
+    const { chat, calls } = fixture(args => args[1] === "status" ? json(current) : undefined);
+    await chat.start("send", { query: "Hi" });
+    current = { ...account, account: "different@example.test" };
+    await chat.start("send", { query: "Next" });
+    assert.equal(chat.state.status, "changed");
+    assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 1);
+    await chat.start("reset");
+    assert.equal(chat.state.status, "ready");
+    assert.equal(chat.conversationId, null);
+});
+
+test("failed and malformed results are not retried or replaced with a fresh conversation", async () => {
+    for (const response of [
+        { code: 1, output: "incomplete secret diagnostics" },
+        json({ ...outcome, success: false, status: "failed", queryDelivery: "attempted" }, 1),
+        json({ ...outcome, conversationId: "../unsafe" }),
+    ]) {
+        const { chat, calls } = fixture(args => args[1] === "ask" && !args.includes("--help") ? response : undefined);
+        await chat.start("send", { query: "Hi" });
+        assert.equal(chat.state.status, "uncertain");
+        assert(!chat.state.error.includes("secret diagnostics"));
+        await chat.start("check");
+        await chat.start("send", { query: "Next" });
+        assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 1);
+        await chat.start("reset");
+        assert.equal(chat.state.status, "ready");
+    }
+});
+
+test("a non-delivered auth failure shows signed out and continues on the next Send", async () => {
+    let needsConsent = true;
+    const { chat, calls } = fixture(args => {
+        if (args[1] === "ask" && args.includes("--query") && needsConsent) {
+            return json({ success: false, status: "failed", queryDelivery: "not-attempted",
+                errorKind: "authentication-required", activities: [] }, 3);
+        }
+    });
+    await chat.start("connect");
+    await chat.start("send", { query: "Hi" });
+    assert.equal(chat.state.status, "authentication-required");
+    needsConsent = false;
+    await chat.start("send", { query: "Hi" });
+    const asks = calls.filter(args => args[1] === "ask" && !args.includes("--help"));
+    assert.equal(asks.length, 3);
+    assert.equal(asks.at(-1)[asks.at(-1).indexOf("--conversation-id") + 1], "conversation-1");
+    assert.equal(chat.state.status, "ready");
+    assert(!calls.some(args => args[0] === "auth" && args[1] === "login"));
+});
+
+test("an uncertain authentication failure during Connect requires New chat before another start", async () => {
+    let first = true;
+    const { chat, calls } = fixture(args => {
+        if (args[1] === "ask" && !args.includes("--help") && first) {
+            first = false;
+            return json({ success: false, status: "failed", queryDelivery: "not-attempted",
+                errorKind: "authentication-required", activities: [] }, 3);
+        }
+    });
+    await chat.start("connect");
+    assert.equal(chat.state.status, "uncertain");
+    assert.match(chat.state.error, /Remote effects may have occurred/);
+    await chat.start("check");
+    assert.equal(chat.state.status, "uncertain");
+    await chat.start("reset", { reconnect: true });
+    assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 2);
+    assert.equal(chat.snapshot().connected, true);
+});
+
+test("a different CLI account cannot continue the existing conversation", async () => {
+    let active = account;
+    const { chat, calls } = fixture(args => args[1] === "status" ? json(active) : undefined);
+    await chat.start("connect");
+    active = { ...account, account: "different@example.test" };
+    await chat.start("send", { query: "Hi" });
+    assert.equal(chat.state.status, "changed");
+    assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 1);
+});
+
+test("cancellation and close abort only the owned invocation and block concurrent operations", async () => {
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const { chat } = fixture((args, { signal }) => {
+        if (args[1] === "ask" && !args.includes("--help")) return new Promise((resolve, reject) => {
+            entered();
+            signal.addEventListener("abort", () => reject(new Error("Cancelled")), { once: true });
+        });
+    });
+    const turn = chat.start("send", { query: "Hi" });
+    await started;
+    assert.throws(() => chat.start("check"), /current operation/);
+    await chat.close();
+    await turn;
+    assert.equal(chat.state.busy, false);
+    assert.equal(chat.state.status, "uncertain");
+});
+
+test("registered target uses deployment destination and detects association changes", async () => {
+    const selected = { project: process.cwd(), agentId: "local-agent", deploymentId: "deployment" };
+    let destination = target.environmentId;
+    const { chat, calls } = fixture(args => args[0] === "agent" ? json({
+        success: true,
+        agents: [{ agentId: selected.agentId, agentType: "MCSAgent", mcsSchemaName: target.schemaName }],
+        deployments: [{ agentId: selected.agentId, deploymentId: selected.deploymentId,
+            agentType: "MCSAgent", environmentId: destination, tenantId: target.tenantId, deploymentName: "dev" }],
+    }) : undefined, selected);
+    await chat.start("send", { query: "Hi" });
+    const send = calls.find(args => args[1] === "ask" && !args.includes("--help"));
+    assert.equal(send[send.indexOf("--environment-id") + 1], target.environmentId);
+    destination = "other-environment";
+    await chat.start("send", { query: "Next" });
+    assert.equal(chat.state.status, "changed");
+    assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 1);
+    await assert.rejects(resolveTarget(selected, async () => json({ success: true, agents: [], deployments: [] })), /association/);
+});
+
+test("target validation rejects mixed selectors, unsafe identifiers and missing explicit identity", () => {
+    for (const value of [
+        { ...target, mcsAgentId: "cloud-id" }, { ...target, tenantId: "not-guid" },
+        { ...target, schemaName: "../schema" }, { project: ".", agentId: "a", deploymentId: "b" },
+        { ...target, project: process.cwd() },
+    ]) assert.throws(() => validateTarget(value));
+    assert.equal(askArguments(target, "Hi").includes("--project"), false);
+});
+
+test("renderer selects only user-facing final text and flags unsupported cards", () => {
+    const activities = [
+        { type: "event", text: "hidden", value: { secret: true } },
+        { type: "message", text: "delta", delta: { text: "hidden" } },
+        { type: "message", text: "reasoning", entities: [{ type: "streaminfo", streamType: "informative" }] },
+        { type: "message", text: "partial", entities: [{ type: "streaminfo", streamType: "streaming" }] },
+        { type: "message", text: "final", entities: [{ type: "streaminfo", streamType: "final" }] },
+        { type: "message", text: "user echo", from: { role: "user" } },
+        { type: "message", attachments: [{ content: { secret: "not rendered" } }] },
+    ];
+    const texts = visibleMessages(activities);
+    assert.equal(texts[0], "final");
+    assert.equal(texts.length, 2);
+    assert.match(texts[1], /not supported/);
+    assert(!texts.join().includes("secret"));
+});
+
+test("CLI failures and invalid output cannot become successful replies", () => {
+    assert.throws(() => parseResult({ code: 0, output: "partial JSON" }), /invalid JSON/);
+    assert.throws(() => parseResult(json({ success: true }, 1)), /failed/);
+    assert.throws(() => parseResult(json({ success: false, errorMessage: "sensitive raw data" })), error => !error.message.includes("sensitive"));
+});
+
+test("process runner bounds output, propagates exit codes and cancels without a shell", async () => {
+    const result = await runCommand(process.execPath, ["-e", "process.stdout.write(JSON.stringify({success:true}));process.exitCode=2"]);
+    assert.equal(result.code, 2);
+    assert.equal(JSON.parse(result.output).success, true);
+    await assert.rejects(runCommand(process.execPath, ["-e", "process.stdout.write('x'.repeat(10000))"], { limit: 32 }), /exceeded/);
+    const controller = new AbortController();
+    const running = runCommand(process.execPath, ["-e", "setInterval(()=>{},1000)"], { signal: controller.signal });
+    controller.abort();
+    await assert.rejects(running, /Cancelled/);
+    await assert.rejects(runCommand(process.execPath, ["-e", "setInterval(()=>{},1000)"], { timeout: 10 }), /timed out/);
+    assert.equal(await resolveExecutable(process.execPath), process.execPath);
+    await assert.rejects(resolveExecutable("./msagent"), /absolute/);
+    await assert.rejects(resolveExecutable(undefined, { PATH: "." }), /not found/);
+});
+
+test("HTTP gateway enforces capability, Host, Origin and content type and closes cleanly", async () => {
+    const { chat } = fixture();
+    const server = await startServer(chat);
+    const url = new URL(server.url);
+    const headers = { Authorization: `Bearer ${url.hash.slice(1)}`, Origin: url.origin, "Content-Type": "application/json" };
+    try {
+        assert.equal((await fetch(url.origin)).status, 200);
+        const markdown = await fetch(`${url.origin}/markdown.mjs`);
+        assert.equal(markdown.status, 200);
+        assert.match(markdown.headers.get("content-type"), /javascript/);
+        assert.match(await markdown.text(), /export function renderMarkdown/);
+        assert.equal((await fetch(`${url.origin}/state`)).status, 403);
+        assert.equal((await fetch(`${url.origin}/debug`)).status, 403);
+        assert.equal((await fetch(`${url.origin}/connect`, { method: "POST", headers: { Origin: url.origin, "Content-Type": "application/json" }, body: '{}' })).status, 403);
+        assert.equal((await fetch(`${url.origin}/debug`, { method: "POST", headers: { Origin: url.origin, "Content-Type": "application/json" }, body: '{"enabled":true}' })).status, 403);
+        assert.equal((await fetch(`${url.origin}/debug`, { method: "POST", headers: { ...headers, Origin: "https://attacker.test" }, body: '{"enabled":true}' })).status, 403);
+        assert.equal((await fetch(`${url.origin}/state`, { headers: { ...headers, Origin: "https://attacker.test" } })).status, 403);
+        const rejectedHost = await new Promise((resolve, reject) => {
+            const req = request(`${url.origin}/state`, { headers: { ...headers, Host: "attacker.test" } }, response => {
+                response.resume();
+                response.on("end", () => resolve(response.statusCode));
+            });
+            req.on("error", reject);
+            req.end();
+        });
+        assert.equal(rejectedHost, 403);
+        assert.equal((await fetch(`${url.origin}/state`, { headers })).status, 200);
+        assert.equal((await fetch(`${url.origin}/check`, { method: "POST", headers: { Authorization: headers.Authorization }, body: "{}" })).status, 400);
+        assert.equal((await fetch(`${url.origin}/check`, { method: "POST", headers, body: "{}" })).status, 202);
+        await chat.pending;
+        assert.equal((await (await fetch(`${url.origin}/state`, { headers })).json()).status, "ready");
+        assert.equal((await fetch(`${url.origin}/login`, { method: "POST", headers, body: "{}" })).status, 400);
+        assert.equal((await fetch(`${url.origin}/debug`, { method: "POST", headers, body: '{"enabled":"true"}' })).status, 400);
+        assert.equal((await fetch(`${url.origin}/debug`, { method: "POST", headers, body: '{"enabled":true}' })).status, 400);
+        assert.equal((await fetch(`${url.origin}/connect`, { method: "POST", headers, body: '{}' })).status, 202);
+        await chat.pending;
+        const connected = await (await fetch(`${url.origin}/state`, { headers })).json();
+        assert.equal(connected.connected, true);
+        assert(connected.messages.every(message => message.role === "assistant"));
+        assert.equal((await fetch(`${url.origin}/send`, { method: "POST", headers, body: '{"query":"Hello"}' })).status, 202);
+        await chat.pending;
+        const debug = await (await fetch(`${url.origin}/debug`, { headers })).json();
+        assert.equal(debug.responses.length, 2);
+        assert(debug.responses.every(response => response.complete));
+        assert.deepEqual(debug.responses[1].payload, outcome);
+        assert.deepEqual(debug.messages, (await (await fetch(`${url.origin}/state`, { headers })).json()).messages);
+        assert.equal((await fetch(`${url.origin}/reset`, { method: "POST", headers, body: '{}' })).status, 202);
+        await chat.pending;
+        const reset = await (await fetch(`${url.origin}/debug`, { headers })).json();
+        assert.deepEqual(reset.messages, []);
+        assert.deepEqual(reset.responses, []);
+        assert.equal((await fetch(`${url.origin}/send`, { method: "POST", headers, body: "{" })).status, 400);
+        assert.equal((await fetch(`${url.origin}/check`, { method: "POST", headers, body: JSON.stringify({ query: "x".repeat(100_001) }) })).status, 413);
+    } finally { await server.close(); }
+    await assert.rejects(fetch(url.origin));
+});
+
+test("opening fails for a signed-out CLI without running sign-in and succeeds once signed in", async () => {
+    let signedIn = false;
+    const { chat, calls } = fixture(args => args[1] === "status" ? json(signedIn ? account : { success: true, signedIn: false }) : undefined);
+    await assert.rejects(chat.verifyOpen(), /msagent auth login/);
+    assert(!calls.some(args => args[0] === "auth" && args[1] === "login"));
+    signedIn = true;
+    await chat.verifyOpen();
+    assert.equal(chat.state.status, "ready");
+    assert(!calls.some(args => args[1] === "ask" && !args.includes("--help")));
+});

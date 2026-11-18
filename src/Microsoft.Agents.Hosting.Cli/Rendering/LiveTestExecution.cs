@@ -76,6 +76,7 @@ public sealed class LiveTestExecution : ILiveTestStreamingResult, IStreamingFail
         try
         {
             Validate(_request);
+            var attachments = await ReadAttachmentsAsync(_request.Files, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             var target = _resolve(_request);
             targetSource = target.TargetSource;
@@ -98,14 +99,20 @@ public sealed class LiveTestExecution : ILiveTestStreamingResult, IStreamingFail
                         "Check that the published agent supports authenticated conversations.");
             }
 
-            delivery = "attempted";
-            await foreach (var activity in session.QueryAsync(_request.Query!, conversationId, cancellationToken).WithCancellation(cancellationToken))
+            if (!_request.StartConversation)
             {
+                delivery = "attempted";
+                var replies = attachments.Count == 0
+                    ? session.QueryAsync(_request.Query!, conversationId, cancellationToken)
+                    : session.QueryAsync(_request.Query!, conversationId, attachments, cancellationToken);
+                await foreach (var activity in replies.WithCancellation(cancellationToken))
+                {
+                    ConfirmId(session.ServiceConversationId, ref conversationId, ref conversationSource);
+                    ConfirmId(ActivityId(activity), ref conversationId, ref conversationSource);
+                    await WriteActivity(activity);
+                }
                 ConfirmId(session.ServiceConversationId, ref conversationId, ref conversationSource);
-                ConfirmId(ActivityId(activity), ref conversationId, ref conversationSource);
-                await WriteActivity(activity);
             }
-            ConfirmId(session.ServiceConversationId, ref conversationId, ref conversationSource);
         }
         catch (Exception failure)
         {
@@ -170,7 +177,13 @@ public sealed class LiveTestExecution : ILiveTestStreamingResult, IStreamingFail
 
     private static void Validate(LiveTestRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.Query))
+        if (request.Files.Count > 5 || (request.StartConversation && request.Files.Count > 0))
+            throw new LiveTestFailure("invalid-input", 2, "Attach at most five files to a query, not to --start-conversation.",
+                "Send a query with up to five --file options, at most 10 MiB total.");
+        if (request.StartConversation && (request.Query is not null || request.ConversationId is not null))
+            throw new LiveTestFailure("invalid-input", 2, "--start-conversation cannot be combined with --query or --conversation-id.",
+                "Start a new conversation without a query, or supply --query to send a message.");
+        if (!request.StartConversation && string.IsNullOrWhiteSpace(request.Query))
             throw new LiveTestFailure("invalid-input", 2, "A nonblank --query is required.",
                 "Supply one literal query with --query.");
         if (request.Json && request.Plain)
@@ -192,6 +205,53 @@ public sealed class LiveTestExecution : ILiveTestStreamingResult, IStreamingFail
                 char.IsControl(character) || character is '/' or '\\' or '?' or '#' or '%')))
             throw new LiveTestFailure("invalid-input", 2, "The --conversation-id is not a safe identifier.",
                 "Supply the conversation ID returned by the selected agent.");
+    }
+
+    private static async Task<IReadOnlyList<LiveTestAttachment>> ReadAttachmentsAsync(
+        IReadOnlyList<string> files, CancellationToken cancellationToken)
+    {
+        var attachments = new List<LiveTestAttachment>();
+        long remaining = 10 * 1024 * 1024;
+        try
+        {
+            foreach (var path in files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                    4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                if (stream.Length > remaining)
+                    throw new LiveTestFailure("invalid-input", 2, "Attachments exceed the 10 MiB total limit.",
+                        "Select smaller files.");
+                var bytes = new byte[(int)stream.Length];
+                await stream.ReadExactlyAsync(bytes, cancellationToken);
+                if (stream.ReadByte() != -1)
+                    throw new LiveTestFailure("invalid-input", 2, "An attachment changed while being read.",
+                        "Finish editing the file before sending it.");
+                remaining -= bytes.Length;
+                var contentType = Path.GetExtension(path).ToLowerInvariant() switch
+                {
+                    ".pdf" => "application/pdf",
+                    ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    ".txt" => "text/plain",
+                    ".md" => "text/markdown",
+                    ".csv" => "text/csv",
+                    ".json" => "application/json",
+                    ".png" => "image/png",
+                    ".jpg" or ".jpeg" => "image/jpeg",
+                    ".webp" => "image/webp",
+                    _ => "application/octet-stream",
+                };
+                attachments.Add(new(Path.GetFileName(path), contentType, bytes));
+            }
+        }
+        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            throw new LiveTestFailure("invalid-input", 2, "An attachment could not be read.",
+                "Select readable local files, at most 10 MiB total.");
+        }
+        return attachments;
     }
 
     private static string? ActivityId(JsonElement activity)

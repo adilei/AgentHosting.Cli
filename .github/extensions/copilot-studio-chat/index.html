@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Copilot Studio chat</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+  <header>
+    <div class="chat-heading">
+      <h1>Copilot Studio</h1>
+      <p id="agent">Checking agent...</p>
+    </div>
+    <div class="header-actions">
+      <span id="status" role="status">Opening</span>
+      <button id="new-chat" type="button" title="Discard this conversation and start a new one" disabled>New chat</button>
+      <details id="connection">
+        <summary aria-label="Connection details" title="Connection details">...</summary>
+        <div class="connection-panel">
+          <h2>Connection</h2>
+          <p id="identity">Checking CLI account...</p>
+          <p id="target"></p>
+          <p class="notice">Access is checked when sending. The deployment label is not registry-verified for explicit targets.</p>
+          <div class="controls">
+            <button id="check" type="button">Refresh status</button>
+          </div>
+          <p class="notice">Live messages may consume credits or change data. Replies do not prove an action succeeded.</p>
+          <p class="notice">Messages are CLI arguments and may be visible to local process inspection.</p>
+        </div>
+      </details>
+    </div>
+  </header>
+  <div class="view-controls" role="group" aria-label="Conversation view">
+    <button id="view-chat" type="button" aria-pressed="true" aria-controls="chat-view">Chat</button>
+    <button id="view-debug" type="button" aria-pressed="false" aria-controls="debug-view">Debug</button>
+  </div>
+  <main>
+    <div id="chat-view">
+      <div id="messages" role="log" aria-label="Conversation"></div>
+    </div>
+    <div id="typing" class="typing" role="status" aria-live="polite" hidden>
+      <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span id="typing-text">Waiting for Copilot Studio</span>
+    </div>
+    <section id="debug-view" hidden aria-label="Conversation data (JSON)">
+      <h2>Conversation data (JSON)</h2>
+      <p class="notice">The data behind this chat: messages, agent responses, and CLI result metadata. This does not expose hidden reasoning. Known credentials are redacted; other sensitive data may remain.</p>
+      <p id="debug-status" class="notice"></p>
+      <div class="debug-search" role="search" aria-label="Search conversation data">
+        <input id="debug-search" type="search" placeholder="Find in debug data" aria-label="Find in debug data" autocomplete="off">
+        <span id="debug-search-count" role="status" aria-live="polite" aria-atomic="true"></span>
+        <button id="debug-previous" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)" disabled>Previous</button>
+        <button id="debug-next" type="button" aria-label="Next match" title="Next match (Enter)" disabled>Next</button>
+      </div>
+      <pre id="debug-output" tabindex="0"></pre>
+    </section>
+    <p id="error" role="alert" hidden></p>
+  </main>
+  <form id="composer">
+    <textarea id="query" rows="3" maxlength="16000" placeholder="Ask your agent…" aria-label="Ask your agent" aria-describedby="send-hint" required></textarea>
+    <div class="file-picker">
+      <label for="files">Attach files<input id="files" type="file" multiple aria-describedby="file-hint"></label>
+      <small id="file-hint">Up to 5 files, 10 MiB total. Sent only with your message.</small>
+    </div>
+    <div id="pending-files" aria-label="Attached files"></div>
+    <div class="controls">
+      <small id="send-hint">Enter to send. Shift+Enter for a new line. Don't paste credentials.</small>
+      <button id="cancel" type="button" disabled>Cancel</button>
+      <button id="send" type="submit" disabled>Send</button>
+    </div>
+  </form>
+</body>
+</html>
