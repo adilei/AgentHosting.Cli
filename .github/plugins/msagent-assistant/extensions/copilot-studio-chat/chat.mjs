@@ -60,6 +60,7 @@ export class ChatRegistry {
 
     async send(instanceId, query) {
         const { chat } = await this.ready(instanceId);
+        if (chat.snapshot().busy) await chat.pending;
         const before = chat.snapshot().messages.length;
         await chat.start("send", { query });
         const state = chat.snapshot();

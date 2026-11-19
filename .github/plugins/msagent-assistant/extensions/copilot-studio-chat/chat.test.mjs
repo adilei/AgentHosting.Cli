@@ -1524,12 +1524,14 @@ test("Copilot can send a message through the panel and read the whole transcript
         ? json({ success: false, exitCode: 3, errorKind: "authentication", errorMessage: "Sign in again." }, 3) : undefined);
     const registry = new ChatRegistry(async () => ({ chat: current.chat, server: { close: async () => {} } }));
     const { chat } = await registry.open("panel", { chatId: "copilot", target });
-    await chat.start("connect");
+    chat.start("connect");
+    assert.deepEqual((await registry.send("panel", "While connecting")).replies, [{ role: "assistant", text: "Hello" }]);
     await chat.start("send", { query: "From the user" });
     assert.deepEqual(await registry.send("panel", "From Copilot"), { status: "ready", replies: [{ role: "assistant", text: "Hello" }] });
     const transcript = await registry.transcript("panel");
     assert.deepEqual(transcript.messages.map(message => [message.role, message.text]), [
-        ["assistant", "Hello"], ["user", "From the user"], ["assistant", "Hello"], ["user", "From Copilot"], ["assistant", "Hello"],
+        ["assistant", "Hello"], ["user", "While connecting"], ["assistant", "Hello"], ["user", "From the user"], ["assistant", "Hello"],
+        ["user", "From Copilot"], ["assistant", "Hello"],
     ]);
     assert.equal(transcript.error, null);
     fail = true;
