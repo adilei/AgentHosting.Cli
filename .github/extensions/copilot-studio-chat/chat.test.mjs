@@ -26,36 +26,24 @@ const streamed = (text, sequence, type = "streaming", id = "reply") => ({
     type: "message", text, entities: [{ type: "streaminfo", streamId: id, streamSequence: sequence, streamType: type }],
 });
 
-test("conversation data preserves event structure and masks credentials without mutating activities or messages", () => {
+test("conversation data records activities, envelopes and messages verbatim without aliasing them", () => {
     const data = new ConversationData();
-    const event = { type: "event", name: "ToolInvocation", value: {
-        tool: "weather", tokenUsage: 12, access_token: "access-secret",
-        headers: { Authorization: "Bearer header-secret" },
-        parameters: [{ name: "clientSecret", value: "client-secret" }, { name: "city", value: "Paris" }],
-        text: "Bearer inline-secret", jwt: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature",
-        url: "https://example.test?sig=url-secret&city=Paris",
-    } };
+    const event = { type: "event", name: "ToolInvocation", value: { tool: "weather", access_token: "token-value",
+        url: "https://example.test?sig=signature&city=Paris" } };
     data.begin("connect");
     data.activity(event);
     let response = data.snapshot().responses[0];
     assert.equal(response.complete, false);
-    assert.equal(response.payload.activities[0].name, "ToolInvocation");
-    const body = JSON.stringify(response.payload);
-    for (const secret of ["access-secret", "header-secret", "client-secret", "inline-secret", "url-secret"]) {
-        assert(!body.includes(secret));
-    }
-    assert.equal(response.payload.activities[0].value.tokenUsage, 12);
-    assert.equal(response.payload.activities[0].value.jwt, "***");
-    assert.equal(response.payload.activities[0].value.parameters[1].value, "Paris");
-    assert.equal(event.value.access_token, "access-secret");
+    assert.deepEqual(response.payload.activities[0], event);
+    event.value.tool = "changed";
+    assert.equal(data.snapshot().responses[0].payload.activities[0].value.tool, "weather");
     data.finish({ ...outcome, activities: [event] });
     response = data.snapshot().responses[0];
     assert.equal(response.complete, true);
     assert.equal(response.payload.status, "completed");
-    assert.equal(response.payload.conversationId, "conversation-1");
-    const messages = [{ role: "user", text: "Bearer message-secret" }];
-    assert.equal(data.snapshot(messages).messages[0].text, "Bearer ***");
-    assert.equal(messages[0].text, "Bearer message-secret");
+    assert.equal(response.payload.activities[0].value.access_token, "token-value");
+    const messages = [{ role: "user", text: "Bearer value" }];
+    assert.deepEqual(data.snapshot(messages).messages, messages);
 });
 
 test("conversation data bounds raw responses and labels oversized or unfinished output", () => {
@@ -1701,7 +1689,7 @@ test("Debug conversation data is saved with the chat and restored after the exte
     const directory = await mkdtemp(path.join(tmpdir(), "started-chats-"));
     try {
         const store = new StartedChats(directory);
-        const event = { type: "event", name: "ToolInvocation", value: { access_token: "access-secret" } };
+        const event = { type: "event", name: "ToolInvocation", value: { tool: "weather" } };
         const first = fixture((args, { onStdout }) => {
             if (args[1] !== "ask" || args.includes("--help")) return;
             onStdout('{"schemaVersion":"1","activities":[' + JSON.stringify(event));
@@ -1714,7 +1702,6 @@ test("Debug conversation data is saved with the chat and restored after the exte
         const before = first.chat.debugSnapshot().responses;
         const record = await store.load("session-1", "panel-1");
         assert.equal(record.debug.responses.length, 2);
-        assert(!JSON.stringify(record).includes("access-secret"));
 
         const second = fixture();
         await second.chat.verifyOpen();

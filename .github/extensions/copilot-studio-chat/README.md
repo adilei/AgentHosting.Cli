@@ -209,9 +209,9 @@ and is labeled incomplete. Older raw responses are discarded first when needed; 
 responses retain a bounded prefix. Incomplete and omitted response details are
 explicitly labeled without removing messages from the chat transcript.
 New chat clears both representations.
-Known credential fields, bearer/JWT strings and credential URL parameters are
-masked as `***`. Arbitrary agent/business data can still be sensitive: this is
-not a general-purpose data-loss-prevention filter. Auth results and CLI stderr
+Activities and the final CLI envelope are shown verbatim, without masking; they
+may contain sensitive agent or business data. Raw HTTP traffic is not part of
+the CLI output. Auth results and CLI stderr
 are never retained in conversation data. Payloads are displayed as inert JSON text, never Markdown
 or executable content, and are not written to logs or exposed by canvas actions.
 
