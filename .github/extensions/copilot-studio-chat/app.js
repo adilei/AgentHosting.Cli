@@ -14,6 +14,7 @@ let debugUpdatedAt = 0;
 let debugView = false;
 let debugSelection;
 let debugTargets = new Map();
+let debugStreams = new Map();
 let debugSegments = [];
 let debugText = "";
 let debugMarkedSegments = [];
@@ -62,8 +63,7 @@ async function downloadFile(file, button) {
 }
 
 function highlightDebug(scroll = false) {
-    if (!debugSelection) return;
-    const { turnId, role } = debugSelection;
+    const { turnId, role } = debugSelection ?? {};
     const target = (role === "assistant" && debugTargets.get(`response-${turnId}`)) ||
         debugTargets.get(`message-${turnId}-${role}`);
     for (const node of debugTargets.values()) node.className = node === target ? "debug-entry debug-selected" : "debug-entry";
@@ -76,7 +76,9 @@ function highlightDebug(scroll = false) {
 }
 
 function searchDebug({ reset = false, direction = 0, scroll = false } = {}) {
-    for (const segment of debugMarkedSegments) segment.node.textContent = segment.text;
+    for (const segment of debugMarkedSegments) {
+        segment.node.textContent = !segment.details || segment.details.open ? segment.text : "";
+    }
     debugMarkedSegments = [];
     if (reset) debugMatchIndex = 0;
     else if (direction && debugMatchCount) {
@@ -113,6 +115,10 @@ function searchDebug({ reset = false, direction = 0, scroll = false } = {}) {
         const start = Math.max(0, selected.start - segment.start);
         const end = Math.min(segment.text.length, selected.end - segment.start);
         if (start >= end) continue;
+        if (segment.details && !segment.details.open) {
+            if (!scroll) continue;
+            segment.details.open = true;
+        }
         const mark = document.createElement("mark");
         mark.className = "debug-search-match";
         mark.textContent = segment.text.slice(start, end);
@@ -125,16 +131,27 @@ function searchDebug({ reset = false, direction = 0, scroll = false } = {}) {
 
 function renderDebug(debug) {
     const focused = document.activeElement?.className === "debug-entry debug-selected";
+    const previousStreams = debugStreams;
+    debugStreams = new Map();
     debugTargets = new Map();
     debugSegments = [];
     debugMarkedSegments = [];
     const parts = [];
     let offset = 0;
-    const add = (text, node = document.createElement("span")) => {
-        node.textContent = text;
-        debugSegments.push({ node, text, start: offset });
+    const add = (text, parent, details) => {
+        const node = document.createElement("span");
+        if (!details || details.open) node.textContent = text;
+        debugSegments.push({ node, text, start: offset, details });
         offset += text.length;
-        parts.push(node);
+        if (parent) parent.append(node);
+        else parts.push(node);
+        return node;
+    };
+    const streaming = activity => {
+        if (!["message", "typing"].includes(activity?.type) || !Array.isArray(activity.entities)) return false;
+        const info = activity.entities.find(entity => typeof entity?.type === "string" && entity.type.toLowerCase() === "streaminfo");
+        const type = info?.streamType ?? info?.streamtype;
+        return typeof type === "string" && type.toLowerCase() === "streaming";
     };
     add("{\n");
     for (const name of ["messages", "responses"]) {
@@ -142,12 +159,61 @@ function renderDebug(debug) {
         add(`  "${name}": [`);
         debug[name].forEach((value, index) => {
             add(index ? ",\n" : "\n");
-            const node = document.createElement("span");
+            const node = document.createElement("div");
             node.id = `debug-${name === "messages" ? `message-${value.turnId}-${value.role}` : `response-${value.turnId}`}`;
             node.tabIndex = -1;
             node.className = "debug-entry";
             debugTargets.set(node.id.slice(6), node);
-            add(JSON.stringify(value, null, 2).replace(/^/gm, "    "), node);
+            parts.push(node);
+            const activities = name === "responses" ? value.payload?.activities : undefined;
+            if (!Array.isArray(activities) || !activities.some(streaming)) {
+                add(JSON.stringify(value, null, 2).replace(/^/gm, "    "), node);
+                return;
+            }
+            const indent = depth => "  ".repeat(depth);
+            const format = (entry, depth) => JSON.stringify(entry, null, 2).replace(/\n/g, `\n${indent(depth)}`);
+            let group = 0;
+            const write = (entry, depth) => {
+                if (entry === activities) {
+                    add("[", node);
+                    for (let first = 0; first < entry.length;) {
+                        let end = first + 1;
+                        if (streaming(entry[first])) {
+                            while (end < entry.length && streaming(entry[end])) end++;
+                            const key = `${value.turnId ?? index}-${group++}`;
+                            const details = document.createElement("details");
+                            details.className = "debug-stream";
+                            details.open = previousStreams.get(key)?.open ?? false;
+                            const summary = document.createElement("summary");
+                            summary.textContent = `Streaming chunks (${end - first})`;
+                            details.append(summary);
+                            node.append(details);
+                            debugStreams.set(key, details);
+                            const text = entry.slice(first, end).map((activity, offset) =>
+                                `${first + offset ? ",\n" : "\n"}${indent(depth + 1)}${format(activity, depth + 1)}`).join("");
+                            const content = add(text, details, details);
+                            details.addEventListener("toggle", () => {
+                                if (debugStreams.get(key) !== details) return;
+                                content.textContent = details.open ? text : "";
+                                searchDebug();
+                            });
+                        } else {
+                            add(`${first ? ",\n" : "\n"}${indent(depth + 1)}${format(entry[first], depth + 1)}`, node);
+                        }
+                        first = end;
+                    }
+                    add(entry.length ? `\n${indent(depth)}]` : "]", node);
+                } else if (entry === value || entry === value.payload) {
+                    add("{", node);
+                    Object.entries(entry).forEach(([key, child], index) => {
+                        add(`${index ? "," : ""}\n${indent(depth + 1)}${JSON.stringify(key)}: `, node);
+                        write(child, depth + 1);
+                    });
+                    add(`\n${indent(depth)}}`, node);
+                } else add(format(entry, depth), node);
+            };
+            add("    ", node);
+            write(value, 2);
         });
         add(debug[name].length ? "\n  ]" : "]");
     }
@@ -390,7 +456,8 @@ element("query").addEventListener("keydown", event => {
     if (!event.repeat && !element("send").disabled) element("composer").requestSubmit();
 });
 async function selectView(debug, selection) {
-    if (selection) debugSelection = selection;
+    debugSelection = debug ? selection : undefined;
+    highlightDebug();
     debugView = debug;
     controls();
     try { await refreshDebug(true); if (selection) highlightDebug(true); }

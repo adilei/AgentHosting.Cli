@@ -280,6 +280,11 @@ function descendants(node) {
     return [node, ...node.children.filter(child => typeof child !== "string").flatMap(descendants)];
 }
 
+function debugJsonText(node) {
+    if (node.tagName === "summary") return "";
+    return node.children.map(child => typeof child === "string" ? child : debugJsonText(child)).join("");
+}
+
 test("Markdown formats common reply blocks and inline text without inserting HTML", () => {
     const root = renderMarkdown([
         "# Study design", "", "**Blind** and *randomized* with `literal <code>`.", "",
@@ -557,6 +562,10 @@ test("message ellipses jump to the matching raw response or input even for repea
     assert.equal(document.activeElement.id, "debug-response-2");
     assert.equal(document.activeElement.scrolled.block, "start");
     assert.deepEqual(JSON.parse(get("debug-output").textContent).messages, state.messages);
+    await get("view-chat").events.click();
+    assert(!descendants(get("debug-output")).some(node => node.className === "debug-entry debug-selected"));
+    await get("view-debug").events.click();
+    assert(!descendants(get("debug-output")).some(node => node.className === "debug-entry debug-selected"));
     await get("view-chat").events.click();
     await inspect(1).events.click();
     assert.equal(document.activeElement.id, "debug-message-2-user");
@@ -840,6 +849,128 @@ test("Debug can first open during streaming and follows the same transcript thro
     assert(calls.every(route => route === "/state" || route === "/debug"));
     await get("view-chat").events.click();
     assert.equal(get("chat-view").hidden, false);
+});
+
+test("Debug lazily collapses streaming runs while keeping final replies and other events visible in order", async () => {
+    const state = { status: "ready", busy: false, target, messages: [], error: null, debugRevision: 1 };
+    const debug = { revision: 1, messages: [], responses: [{ turnId: 1, complete: false, payload: {
+        activities: [
+            streamed("first hidden chunk", 1),
+            { ...streamed("second hidden chunk", 2), type: "typing" },
+            streamed("Final reply", 3, "final"),
+            { ...streamed("Tool details", 1), type: "event", name: "ToolInvocation" },
+            { type: "typing", entities: [{ type: "StreamInfo", streamtype: "Streaming" }], text: "third hidden chunk" },
+            { type: "message", text: "Other reply" },
+            streamed("Informative event", 1, "informative"),
+            { type: "message", text: "Malformed stream metadata", entities: [{ type: 42 }, { type: "streaminfo", streamType: 2 }] },
+        ],
+    } }], truncated: true };
+    const original = structuredClone(debug);
+    const { get, refresh, calls } = await uiFixture(state, route => route === "/debug"
+        ? { ok: true, json: async () => debug } : undefined);
+    await get("view-debug").events.click();
+    const groups = () => descendants(get("debug-output")).filter(node => node.tagName === "details");
+    const [first, second] = groups();
+    assert.equal(groups().length, 2);
+    assert.equal(first.open, false);
+    assert.equal(first.children[0].textContent, "Streaming chunks (2)");
+    assert.equal(second.children[0].textContent, "Streaming chunks (1)");
+    assert(!get("debug-output").textContent.includes("hidden chunk"));
+    for (const text of ["Final reply", "ToolInvocation", "Other reply", "Informative event", "Malformed stream metadata"]) {
+        assert(get("debug-output").textContent.includes(text));
+    }
+    assert.match(get("debug-status").textContent, /omitted/);
+
+    for (const group of groups()) {
+        group.open = true;
+        group.events.toggle();
+    }
+    assert.deepEqual(JSON.parse(debugJsonText(get("debug-output"))), {
+        messages: debug.messages, responses: debug.responses, truncated: true,
+    });
+    assert.deepEqual(debug, original);
+    second.open = false;
+    second.events.toggle();
+    assert(!get("debug-output").textContent.includes("third hidden chunk"));
+    await refresh();
+    assert.equal(groups()[0], first);
+
+    debug.responses[0].payload.activities.splice(2, 0, streamed("new streamed chunk", 3));
+    debug.responses[0].complete = true;
+    debug.revision = ++state.debugRevision;
+    await refresh();
+    assert.equal(groups()[0].open, true);
+    assert.equal(groups()[0].children[0].textContent, "Streaming chunks (3)");
+    assert(get("debug-output").textContent.includes("new streamed chunk"));
+    assert.equal(groups()[1].open, false);
+    assert(calls.every(route => route === "/state" || route === "/debug"));
+});
+
+test("collapsed Debug keeps a large stream out of the rendered document until expansion", async () => {
+    const state = { status: "ready", busy: false, target, messages: [], error: null, debugRevision: 1 };
+    const chunks = Array.from({ length: 1200 }, (_, index) => streamed(`chunk-${index} ${"x".repeat(300)}`, index));
+    const debug = { revision: 1, messages: [], truncated: false, responses: [
+        { turnId: 1, complete: true, payload: { activities: [...chunks, streamed("Done", 1200, "final")] } },
+    ] };
+    const { get } = await uiFixture(state, route => route === "/debug"
+        ? { ok: true, json: async () => debug } : undefined);
+    await get("view-debug").events.click();
+    const output = get("debug-output");
+    const group = descendants(output).find(node => node.tagName === "details");
+    assert.equal(group.children[0].textContent, "Streaming chunks (1200)");
+    assert(output.textContent.length < 2000);
+    assert(descendants(output).length < 100);
+    group.open = true;
+    group.events.toggle();
+    assert(output.textContent.includes("chunk-1199"));
+    assert.equal(JSON.parse(debugJsonText(output)).responses[0].payload.activities.length, 1201);
+    group.open = false;
+    group.events.toggle();
+    assert(output.textContent.length < 2000);
+});
+
+test("Debug search finds and reveals collapsed streaming chunks without rendering every match", async () => {
+    const state = { status: "ready", busy: false, target, messages: [], error: null, debugRevision: 1 };
+    const debug = { revision: 1, messages: [], truncated: false, responses: [
+        { turnId: 1, complete: true, payload: { activities: [
+            streamed("<script>needle first</script>", 1), streamed("needle second", 2),
+            streamed("Final reply", 3, "final"),
+        ] } },
+    ] };
+    const { get, calls } = await uiFixture(state, route => route === "/debug"
+        ? { ok: true, json: async () => debug } : undefined);
+    await get("view-debug").events.click();
+    const group = descendants(get("debug-output")).find(node => node.tagName === "details");
+    const marks = () => descendants(get("debug-output")).filter(node => node.tagName === "mark");
+    assert.equal(group.open, false);
+    assert(!get("debug-output").textContent.includes("needle"));
+    const search = get("debug-search");
+    search.value = "needle";
+    search.events.input();
+    assert.equal(get("debug-search-count").textContent, "1 of 2");
+    assert.equal(group.open, true);
+    assert.equal(marks().length, 1);
+    assert.equal(marks()[0].scrolled.block, "center");
+    group.events.toggle();
+    assert.equal(marks().length, 1);
+    get("debug-next").events.click();
+    assert.equal(get("debug-search-count").textContent, "2 of 2");
+    assert.equal(marks().length, 1);
+    assert(!descendants(get("debug-output")).some(node => node.tagName === "script"));
+    assert.deepEqual(JSON.parse(debugJsonText(get("debug-output"))).responses, debug.responses);
+
+    group.open = false;
+    group.events.toggle();
+    assert.equal(group.open, false);
+    assert(!get("debug-output").textContent.includes("needle"));
+    get("debug-previous").events.click();
+    assert.equal(group.open, true);
+    assert.equal(get("debug-search-count").textContent, "1 of 2");
+    assert.equal(marks().length, 1);
+    search.events.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(marks().length, 0);
+    assert.deepEqual(JSON.parse(debugJsonText(get("debug-output"))).responses, debug.responses);
+    assert(calls.every(route => route === "/state" || route === "/debug"));
 });
 
 test("debug search finds literal text case-insensitively and navigates without changing the JSON or draft", async () => {

@@ -181,16 +181,24 @@ and works during streaming; it never sends a message or restarts the conversatio
 Use **Find in debug data** to search the displayed JSON, ignoring case. The current
 match is highlighted; use **Previous** and **Next**, or Shift+Enter and Enter, to
 move through matches. Results update as the conversation data changes.
+Search includes collapsed streaming chunks and expands the group containing
+the selected match.
 
 Each bubble has an ellipsis menu with **View debug**. It switches views and
 highlights that turn's raw response for an agent bubble, or the input JSON for a
 user bubble. Stable turn IDs keep the link correct through streaming and repeated
 text. If older raw response details were discarded, the corresponding transcript
 entry is highlighted instead and the omitted-data notice remains visible.
+Returning to Chat clears this message highlight; opening Debug normally does
+not select the previous message again.
 
 The debug view includes the current transcript and responses from conversation starts and
 subsequent sends. Each response shows activities as they arrive, including
 informative/tool events omitted from chat, followed by the final CLI JSON envelope.
+Consecutive streaming chunks are collapsed behind **Streaming chunks (N)**.
+Expand a group to render its recorded chunks in their original order; final
+messages and other events remain visible. Collapsing does not discard data or
+change the existing retention limit.
 It shows only what `ask` emits; hidden reasoning or tool
 details not returned by the service are not available.
 

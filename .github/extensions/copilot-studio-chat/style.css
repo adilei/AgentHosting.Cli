@@ -32,7 +32,7 @@ main { flex: 1; overflow: auto; padding: 16px; }
 button, textarea { font: inherit; color: inherit; border: 1px solid var(--border-color-default, #d1d9e0); border-radius: 6px; background: var(--background-color-default, #fff); }
 button { padding: 5px 10px; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
-button:focus-visible, textarea:focus-visible, input:focus-visible, summary:focus-visible, pre:focus-visible { outline: 2px solid var(--color-focus-outline, #0969da); outline-offset: 2px; }
+button:focus-visible, textarea:focus-visible, input:focus-visible, summary:focus-visible, pre:focus-visible, #debug-output:focus-visible { outline: 2px solid var(--color-focus-outline, #0969da); outline-offset: 2px; }
 form { border-top: 1px solid var(--border-color-default, #d1d9e0); }
 label { display: block; margin-bottom: 6px; }
 textarea { display: block; width: 100%; padding: 8px; resize: vertical; max-height: 200px; }
@@ -75,7 +75,8 @@ textarea { display: block; width: 100%; padding: 8px; resize: vertical; max-heig
 #debug-output { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--font-mono, monospace); }
 .debug-search-match { background: var(--true-color-yellow-muted, #fff8c5); color: var(--text-color-default, #1f2328); outline: 1px solid var(--color-focus-outline, #0969da); border-radius: 2px; scroll-margin: 48px; }
 .debug-selected { background: var(--true-color-blue-muted, #ddf4ff); outline: 2px solid var(--color-focus-outline, #0969da); outline-offset: 2px; border-radius: 3px; }
-.debug-entry { scroll-margin-top: 12px; }
+.debug-entry { display: inline; scroll-margin-top: 12px; }
+.debug-stream > summary { cursor: pointer; padding-inline-start: 8ch; color: var(--text-color-muted, #59636e); white-space: normal; }
 .composer-input { border: 1px solid var(--border-color-default, #d1d9e0); border-radius: 6px; }
 .composer-input:has(textarea:focus-visible) { outline: 2px solid var(--color-focus-outline, #0969da); outline-offset: 2px; }
 .composer-input textarea { border: 0; border-radius: 6px 6px 0 0; }
