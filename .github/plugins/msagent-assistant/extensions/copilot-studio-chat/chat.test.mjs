@@ -2089,8 +2089,21 @@ test("renderer selects only user-facing final text and flags unsupported cards",
 test("CLI failures and invalid output cannot become successful replies", () => {
     assert.throws(() => parseResult({ code: 0, output: "partial JSON" }), /invalid JSON/);
     assert.throws(() => parseResult(json({ success: true }, 1)), /failed/);
+    assert.throws(() => parseResult(json({ success: false, errorMessage: "sensitive raw data" })), error => !error.message.includes("sensitive"));
+    assert.throws(() => parseResult(json({ success: false, errorCode: 1001, errorKind: "protocol-error",
+        errorMessage: "sensitive raw data", remediation: "sensitive hint" })), error => !error.message.includes("sensitive"));
     assert.throws(() => parseResult(json({ success: false, errorCode: 12006, errorMessage: "Storage\nunavailable.",
-        remediation: "x".repeat(600) })), error => error.message === `Storage unavailable. ${"x".repeat(500)} (12006)`);
+        remediation: "x ".repeat(300) })), error => error.message === `Storage unavailable. ${"x ".repeat(250).trim()} (12006)`);
+});
+
+test("displayed CLI credential guidance redacts secret-like values", () => {
+    const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.c2lnbmF0dXJlLXZhbHVl";
+    assert.throws(() => parseResult(json({ success: false, errorCode: 12006,
+        errorMessage: `Owned protected storage is unavailable (macOS: denied). Bearer ${jwt} refresh_token=abc123 https://login.example/x?code=xyz`,
+        remediation: "Set AH_CLI_ALLOW_UNPROTECTED_CACHE=true only as a last resort." })), error =>
+        error.message.startsWith("Owned protected storage is unavailable (macOS: denied).") &&
+        error.message.includes("AH_CLI_ALLOW_UNPROTECTED_CACHE=true") && error.message.endsWith("(12006)") &&
+        !error.message.includes("eyJ") && !error.message.includes("abc123") && !error.message.includes("xyz"));
 });
 
 test("opening fails with the CLI's own error when signed-in credentials cannot be used", async () => {

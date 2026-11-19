@@ -92,10 +92,25 @@ export function parseResult(result) {
     return data;
 }
 
+const displayableKinds = new Set(["authentication-required", "authentication-failed", "credential-storage-unavailable", "identity-mismatch"]);
+const displayableCodes = new Set([12006]);
+const secretPatterns = [
+    /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
+    /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g,
+    /\b(access_token|refresh_token|id_token|client_secret|password|secret|code|assertion|sig|signature|key)\s*[=:]\s*[^\s&"',;]+/gi,
+    /\bhttps?:\/\/[^\s?#"']+\?[^\s"']*/gi,
+    /\b[A-Za-z0-9+/_-]{40,}={0,2}/g,
+];
+
+function redact(value) {
+    return secretPatterns.reduce((text, pattern) => text.replace(pattern, "[redacted]"), value);
+}
+
 function cliDetail(data) {
+    if (!displayableKinds.has(data.errorKind) && !displayableCodes.has(data.errorCode)) return "";
     return [data.errorMessage, data.remediation]
         .filter(value => typeof value === "string" && value.trim())
-        .map(value => value.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 500))
+        .map(value => redact(value.replace(/[\x00-\x1f\x7f]+/g, " ")).trim().slice(0, 500).trim())
         .join(" ");
 }
 
