@@ -125,8 +125,9 @@ msagent test ask --project <project-path> --agent-name <agentname> --deployment-
 In human-readable output, a specific failure and its recovery guidance appear
 on stderr without an additional generic SDK completion error.
 
-Sign in interactively with `msagent auth login` before running unattended
-queries. `--json` does not itself prevent authentication prompts, and `--plain`
+Sign in interactively with `msagent auth create` before running unattended
+queries, or select the intended existing profile with `msagent auth select --name <name>`.
+`--json` does not itself prevent authentication prompts, and `--plain`
 cannot be combined with `--json`. The JSON result is one incrementally streamed
 activity/result document, not the ordinary command envelope. Check its final
 status and answer; a completed response does not prove a remote action succeeded.
