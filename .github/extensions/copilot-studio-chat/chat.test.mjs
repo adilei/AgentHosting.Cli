@@ -1371,6 +1371,8 @@ test("the declared canvas opens without input and setup never invokes the CLI", 
         },
         process: { once() {} },
     });
+    assert.match(declaration.description, /select an agent and deployment first/);
+    assert.match(declaration.description, /then open with the complete target/);
     assert(declaration.inputSchema.anyOf.some(schema => schema.type === "null"));
     assert(declaration.inputSchema.anyOf.some(schema => schema.type === "object" && schema.maxProperties === 0));
     for (const [index, input] of [undefined, null, {}].entries()) {

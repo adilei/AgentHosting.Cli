@@ -89,7 +89,7 @@ const session = await joinSession({
     canvases: [createCanvas({
         id: "copilot-studio-chat",
         displayName: "Copilot Studio chat",
-        description: "Chat with a Copilot Studio agent. Empty opens show setup through Copilot; a selected target starts a live chat. Provide the agent's friendly name when known.",
+        description: "Chat with a Copilot Studio agent. When asked to open a chat, help the user select an agent and deployment first, then open with the complete target and friendly name. Empty input is only for manual canvas-menu setup.",
         inputSchema,
         actions: [{
             name: "get_status",

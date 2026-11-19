@@ -26,8 +26,10 @@ start a live conversation. **Choose an agent with Copilot** sends a request to
 the main Copilot chat. Sign-in and agent selection happen there, then Copilot
 configures this same canvas with the selected target and friendly agent name.
 
-Alternatively, ask Copilot to open the canvas with one explicit target.
-The canvas type ID is `copilot-studio-chat`.
+When asked to open a chat, Copilot helps select the agent and deployment in the
+main chat first, then opens a configured canvas with that target and its friendly
+name. It does not open an empty setup canvas for a chat request. The canvas type
+ID is `copilot-studio-chat`.
 
 Registered target input:
 
