@@ -104,7 +104,7 @@ export class Chat {
     saved() {
         if (this.conversationIssue && this.restoreRecord) {
             return { ...this.restoreRecord, conversationIssue: this.conversationIssue,
-                ...(this.requiresReset ? { outcomeUncertain: true } : {}) };
+                ...(this.requiresReset ? { outcomeUncertain: true } : {}), debug: this.debug.saved() };
         }
         return {
             target: this.target, resolved: this.resolved, identity: this.identity,
@@ -114,6 +114,7 @@ export class Chat {
             ...(this.conversationIssue && this.state.error ? { diagnostic: this.state.error.slice(0, 2000) } : {}),
             messages: this.state.messages.map(({ streaming, files, ...message }) =>
                 files ? { ...message, files: files.map(file => ({ name: file.name })) } : message),
+            debug: this.debug.saved(),
         };
     }
 
@@ -141,6 +142,10 @@ export class Chat {
             error = "The saved conversation could not be read.";
         }
         if (Array.isArray(saved?.messages) && saved.messages.length <= 100) this.state.messages = saved.messages;
+        this.debug.restore(saved?.debug);
+        for (const message of this.state.messages) {
+            if (Number.isSafeInteger(message?.turnId)) this.debug.sequence = Math.max(this.debug.sequence, message.turnId);
+        }
         if (error) {
             this.conversationIssue = error;
             this.restoreRecord = saved && typeof saved === "object" ? saved : null;

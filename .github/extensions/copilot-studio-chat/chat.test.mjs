@@ -1697,6 +1697,52 @@ test("an interrupted turn is saved as uncertain before the agent is contacted", 
     }
 });
 
+test("Debug conversation data is saved with the chat and restored after the extension restarts", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "started-chats-"));
+    try {
+        const store = new StartedChats(directory);
+        const event = { type: "event", name: "ToolInvocation", value: { access_token: "access-secret" } };
+        const first = fixture((args, { onStdout }) => {
+            if (args[1] !== "ask" || args.includes("--help")) return;
+            onStdout('{"schemaVersion":"1","activities":[' + JSON.stringify(event));
+            return json({ ...outcome, activities: [event, ...outcome.activities] });
+        });
+        await first.chat.verifyOpen();
+        await (await attachChat(first.chat, store, "session-1", "panel-1")).pending;
+        await first.chat.start("send", { query: "Question" });
+        await first.chat.close();
+        const before = first.chat.debugSnapshot().responses;
+        const record = await store.load("session-1", "panel-1");
+        assert.equal(record.debug.responses.length, 2);
+        assert(!JSON.stringify(record).includes("access-secret"));
+
+        const second = fixture();
+        await second.chat.verifyOpen();
+        await attachChat(second.chat, store, "session-1", "panel-1");
+        assert.deepEqual(second.chat.debugSnapshot().responses, before);
+        await second.chat.start("send", { query: "Next" });
+        const turnIds = second.chat.debugSnapshot().responses.map(response => response.turnId);
+        assert.equal(new Set(turnIds).size, 3);
+        assert.equal(second.chat.snapshot().messages.at(-2).turnId, turnIds.at(-1));
+        await second.chat.close();
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("restored Debug data ignores malformed responses and stays within its budget", () => {
+    const data = new ConversationData(300);
+    const response = turnId => ({ turnId, operation: "send", complete: true, truncated: false,
+        payload: { schemaVersion: "1", activities: [{ type: "message", text: "x".repeat(100) }] } });
+    assert.equal(data.restore({ responses: [response(1), null, { turnId: 2 }, response(3), response(4)] }), true);
+    const snapshot = data.snapshot();
+    assert.deepEqual(snapshot.responses.map(entry => entry.turnId), [4]);
+    assert.equal(snapshot.truncated, true);
+    assert(Buffer.byteLength(JSON.stringify(snapshot.responses)) <= 300);
+    assert.equal(data.restore("invalid"), false);
+    assert.deepEqual(data.snapshot().responses, []);
+});
+
 test("a failed safety save prevents sending and reports the storage problem", async () => {
     for (const operation of ["connect", "send"]) {
         const { chat, calls } = fixture();

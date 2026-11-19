@@ -89,6 +89,31 @@ export class ConversationData {
         this.revision++;
     }
 
+    saved() {
+        return { omitted: this.omitted, responses: this.responses.map(response => response.data) };
+    }
+
+    restore(saved) {
+        this.clear();
+        if (!saved || typeof saved !== "object" || !Array.isArray(saved.responses)) return false;
+        for (const entry of saved.responses) {
+            if (!entry || typeof entry !== "object" || !Number.isSafeInteger(entry.turnId) ||
+                !entry.payload || typeof entry.payload !== "object" || !Array.isArray(entry.payload.activities)) continue;
+            const data = redact(entry);
+            const bytes = Buffer.byteLength(JSON.stringify(data));
+            this.bytes += bytes + (this.responses.length ? 1 : 0);
+            this.responses.push({ data, bytes });
+            this.sequence = Math.max(this.sequence, data.turnId);
+        }
+        this.omitted = saved.omitted === true || this.responses.length < saved.responses.length;
+        while (this.responses.length && this.bytes > this.limit) {
+            this.bytes -= this.responses.shift().bytes + (this.responses.length ? 1 : 0);
+            this.omitted = true;
+        }
+        this.revision++;
+        return true;
+    }
+
     snapshot(messages = []) {
         return {
             revision: this.revision, messages: redact(messages),

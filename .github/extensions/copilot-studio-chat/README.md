@@ -94,7 +94,7 @@ once, displays any opening activities and retains the returned conversation ID.
 It does not send a synthetic user message. Starting a conversation may itself
 run configured topics/actions, use credits, and an agent is not required to
 provide a greeting. Reopening an open canvas reuses its conversation. Each open
-canvas saves its conversation ID, transcript, target and CLI account under
+canvas saves its conversation ID, transcript, Debug data, target and CLI account under
 `$COPILOT_HOME/extensions/copilot-studio-chat/artifacts/started/` (owner-only
 file permissions where supported). When the extension or app restarts, the
 runtime reopens existing canvases and each resumes its own conversation with `--conversation-id`
@@ -202,8 +202,10 @@ change the existing retention limit.
 It shows only what `ask` emits; hidden reasoning or tool
 details not returned by the service are not available.
 
-Raw response history is capped at 1 MB and kept only in memory alongside the
-conversation. Older raw responses are discarded first when needed; oversized
+Raw response history is capped at 1 MB and saved with the conversation after
+each turn, so Debug survives extension and app restarts. A turn that is
+interrupted by a restart keeps the chunks received before the provider stopped
+and is labeled incomplete. Older raw responses are discarded first when needed; oversized
 responses retain a bounded prefix. Incomplete and omitted response details are
 explicitly labeled without removing messages from the chat transcript.
 New chat clears both representations.
