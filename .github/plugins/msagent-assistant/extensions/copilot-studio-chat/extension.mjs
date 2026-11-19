@@ -121,6 +121,17 @@ const session = await joinSession({
                 catch (error) { throw new CanvasError("chat_send_failed", error.message); }
             },
         }, {
+            name: "new_chat",
+            description: "Discard this chat's conversation and start a new one, like the panel's New chat button. " +
+                "The current transcript cannot be recovered. Use only when the user explicitly asks for a new chat, " +
+                "or when get_status/get_transcript reports the conversation must be restarted. " +
+                "Never use it just to change topic or to retry a message; keep sending in the existing chat instead.",
+            inputSchema: { type: "object", additionalProperties: false },
+            handler: async ctx => {
+                try { return await registry.newChat(ctx.instanceId); }
+                catch (error) { throw new CanvasError("chat_reset_failed", error.message); }
+            },
+        }, {
             name: "get_transcript",
             description: "Read the conversation shown in this chat, including messages the user sent in the panel.",
             inputSchema: { type: "object", additionalProperties: false },

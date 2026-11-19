@@ -264,7 +264,9 @@ replying, the extension starts a Copilot turn with the reply, marked as untruste
 agent output. Replies to messages typed in the panel do not notify Copilot.
 `get_transcript` returns the role, text, partial flag and file names of every
 message, including those typed in the panel; it does not return Debug data or
-file contents.
+file contents. `new_chat` discards the conversation like the New chat button;
+its description tells Copilot to use it only when the user asks for a new chat
+or the current conversation must be restarted.
 
 Messages are passed as literal CLI arguments, not shell commands. Arguments may
 be visible to local process inspection; do not paste credentials. Treat agent

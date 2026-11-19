@@ -1553,7 +1553,12 @@ test("Copilot's sends return at once and push only their own replies", async () 
     assert.match(replyNotification("panel", notices[2]), /send failed: .*Sign in again/);
     assert.match(replyNotification("panel", notices[0]), /untrusted agent output[\s\S]*"text":"Hello"/);
     await assert.rejects(registry.send("panel", "", notify), /Enter a message/);
+    fail = false;
+    chat.start("send", { query: "Still replying" });
+    assert.deepEqual(await registry.newChat("panel"), { status: "ready", error: null, messageCount: 1 });
+    assert.deepEqual((await registry.transcript("panel")).messages, [{ role: "assistant", text: "Hello" }]);
     await registry.close("panel");
+    await assert.rejects(registry.newChat("panel"), /closed/);
     await assert.rejects(registry.send("panel", "Closed", notify), /closed/);
     await assert.rejects(registry.transcript("panel"), /closed/);
     assert.equal(notices.length, 3);

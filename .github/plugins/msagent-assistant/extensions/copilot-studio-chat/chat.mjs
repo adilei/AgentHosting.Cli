@@ -79,6 +79,14 @@ export class ChatRegistry {
         return { status: "sending" };
     }
 
+    async newChat(instanceId) {
+        const { chat } = await this.ready(instanceId);
+        if (chat.snapshot().busy) await chat.pending;
+        await chat.start("reset", { reconnect: true });
+        const state = chat.snapshot();
+        return { status: state.status, error: state.error ?? null, messageCount: state.messages.length };
+    }
+
     async transcript(instanceId) {
         const { chat } = await this.ready(instanceId);
         const state = chat.snapshot();
