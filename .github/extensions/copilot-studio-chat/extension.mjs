@@ -117,7 +117,7 @@ const session = await joinSession({
             try {
                 if (input.target) validateTarget(input.target);
                 const entry = await registry.open(ctx.instanceId, input, { sessionId: ctx.sessionId });
-                return { title: "Copilot Studio chat", url: entry.server.url };
+                return { title: entry.chat.state?.agentName ?? "Copilot Studio chat", url: entry.server.url };
             } catch (error) {
                 throw new CanvasError("chat_open_failed", error.message);
             }

@@ -583,6 +583,9 @@ test("reply bubbles use the selected agent name and update without changing mess
     const { get, refresh, calls } = await uiFixture(state);
     const headings = () => get("messages").children.map(article => article.children[0].children[0].textContent);
     assert.deepEqual(headings(), ["You", "Example Agent", "Example Agent · Incomplete"]);
+    assert.equal(get("agent").textContent, "Example Agent");
+    assert.equal(get("agent").title, `Example Agent (${target.schemaName})`);
+    assert.equal(get("conn-agent").textContent, target.schemaName);
     state.agentName = "<img src=x onerror=alert(1)>";
     await refresh();
     assert.equal(headings()[1], "<img src=x onerror=alert(1)>");
@@ -590,6 +593,7 @@ test("reply bubbles use the selected agent name and update without changing mess
     delete state.agentName;
     await refresh();
     assert.equal(headings()[1], target.schemaName);
+    assert.equal(get("agent").textContent, target.schemaName);
     state.messages[1].streaming = false;
     await refresh();
     assert.equal(headings()[1], `${target.schemaName} · Incomplete`);

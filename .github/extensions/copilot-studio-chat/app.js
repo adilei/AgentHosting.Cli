@@ -309,8 +309,9 @@ async function refresh() {
         }
         state = next;
         const target = state.target;
-        element("agent").textContent = target.schemaName ?? target.agentId ?? "No agent selected";
-        element("agent").title = element("agent").textContent;
+        const identifier = target.schemaName ?? target.agentId;
+        element("agent").textContent = agentName() ?? "No agent selected";
+        element("agent").title = identifier && identifier !== agentName() ? `${agentName()} (${identifier})` : element("agent").textContent;
         for (const [id, value] of [
             ["conn-account", state.account ?? "Not signed in"],
             ["conn-agent", target.schemaName ?? target.agentId],
