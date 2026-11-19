@@ -259,6 +259,9 @@ stderr and raw auth results are not exposed through canvas actions. The actions
 report status, configure an unconfigured panel, send a message as the user
 (`send_message`) and read the conversation (`get_transcript`). A message Copilot
 sends appears in the panel like a typed one and is a live call to the agent.
+`send_message` returns once the message is sent; when the agent finishes
+replying, the extension starts a Copilot turn with the reply, marked as untrusted
+agent output. Replies to messages typed in the panel do not notify Copilot.
 `get_transcript` returns the role, text, partial flag and file names of every
 message, including those typed in the panel; it does not return Debug data or
 file contents.

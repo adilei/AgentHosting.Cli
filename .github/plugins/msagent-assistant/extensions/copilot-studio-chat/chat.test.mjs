@@ -5,7 +5,7 @@ import { access, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } fr
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
-import { Chat, ChatRegistry, openFailureGuidance } from "./chat.mjs";
+import { Chat, ChatRegistry, openFailureGuidance, replyNotification } from "./chat.mjs";
 import { askArguments, parseResult, ReplyStream, resolveExecutable, resolveTarget, runCommand, validateConfiguredInput, validateTarget, visibleMessages } from "./client.mjs";
 import { ActivityReader } from "./activity-reader.mjs";
 import { renderMarkdown } from "./markdown.mjs";
@@ -1518,27 +1518,45 @@ test("closing while setup is being saved never starts a live conversation", asyn
     }
 });
 
-test("Copilot can send a message through the panel and read the whole transcript", async () => {
+test("Copilot's sends return at once and push only their own replies", async () => {
     let fail = false;
     const current = fixture(args => fail && args[1] === "ask"
         ? json({ success: false, exitCode: 3, errorKind: "authentication", errorMessage: "Sign in again." }, 3) : undefined);
     const registry = new ChatRegistry(async () => ({ chat: current.chat, server: { close: async () => {} } }));
     const { chat } = await registry.open("panel", { chatId: "copilot", target });
+    const notices = [];
+    let delivered;
+    const notify = result => { notices.push(result); delivered(); };
+    const next = () => new Promise(resolve => { delivered = resolve; });
     chat.start("connect");
-    assert.deepEqual((await registry.send("panel", "While connecting")).replies, [{ role: "assistant", text: "Hello" }]);
+    let arrived = next();
+    assert.deepEqual(await registry.send("panel", "While connecting", notify), { status: "sending" });
+    await arrived;
     await chat.start("send", { query: "From the user" });
-    assert.deepEqual(await registry.send("panel", "From Copilot"), { status: "ready", replies: [{ role: "assistant", text: "Hello" }] });
+    arrived = next();
+    await registry.send("panel", "From Copilot", notify);
+    await arrived;
+    assert.deepEqual(notices, [
+        { status: "ready", replies: [{ role: "assistant", text: "Hello" }] },
+        { status: "ready", replies: [{ role: "assistant", text: "Hello" }] },
+    ]);
     const transcript = await registry.transcript("panel");
     assert.deepEqual(transcript.messages.map(message => [message.role, message.text]), [
         ["assistant", "Hello"], ["user", "While connecting"], ["assistant", "Hello"], ["user", "From the user"], ["assistant", "Hello"],
         ["user", "From Copilot"], ["assistant", "Hello"],
     ]);
-    assert.equal(transcript.error, null);
     fail = true;
-    await assert.rejects(registry.send("panel", "Again"), /Sign in again/);
+    arrived = next();
+    await registry.send("panel", "Again", notify);
+    await arrived;
+    assert.match(notices[2].error, /Sign in again/);
+    assert.match(replyNotification("panel", notices[2]), /send failed: .*Sign in again/);
+    assert.match(replyNotification("panel", notices[0]), /untrusted agent output[\s\S]*"text":"Hello"/);
+    await assert.rejects(registry.send("panel", "", notify), /Enter a message/);
     await registry.close("panel");
-    await assert.rejects(registry.send("panel", "Closed"), /closed/);
+    await assert.rejects(registry.send("panel", "Closed", notify), /closed/);
     await assert.rejects(registry.transcript("panel"), /closed/);
+    assert.equal(notices.length, 3);
 });
 
 function fixture(override = () => undefined, selected = target) {

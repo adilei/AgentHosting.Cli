@@ -1,5 +1,5 @@
 import { createCanvas, CanvasError, joinSession } from "@github/copilot-sdk/extension";
-import { Chat, ChatRegistry } from "./chat.mjs";
+import { Chat, ChatRegistry, replyNotification } from "./chat.mjs";
 import { resolveExecutable, validateConfiguredInput, validateTarget } from "./client.mjs";
 import { startServer } from "./server.mjs";
 import { attachChat, pruneStarted, StartedChats } from "./started.mjs";
@@ -101,14 +101,23 @@ const session = await joinSession({
             },
         }, {
             name: "send_message",
-            description: "Send a message to the agent in this chat as the user, shown in the panel, and wait for the reply. " +
+            description: "Send a message to the agent in this chat as the user, shown in the panel. Returns once sent; " +
+                "the agent's reply arrives later as a separate notification in this chat. " +
                 "Only send what the user asked you to; each message is a live call to the agent.",
             inputSchema: {
                 type: "object", additionalProperties: false, required: ["text"],
                 properties: { text: { type: "string", minLength: 1, maxLength: 16_000, pattern: "\\S" } },
             },
             handler: async ctx => {
-                try { return await registry.send(ctx.instanceId, ctx.input.text); }
+                const instanceId = ctx.instanceId;
+                try {
+                    return await registry.send(instanceId, ctx.input.text, result => session.send({
+                        prompt: replyNotification(instanceId, result),
+                        source: "system",
+                        mode: "enqueue",
+                    }).catch(error => session.log(`Copilot Studio chat could not deliver a reply notification: ${error.message}`,
+                        { level: "warning", ephemeral: true })));
+                }
                 catch (error) { throw new CanvasError("chat_send_failed", error.message); }
             },
         }, {
