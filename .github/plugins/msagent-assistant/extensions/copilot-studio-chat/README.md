@@ -272,7 +272,9 @@ replies as untrusted text. Links are not auto-opened and HTML is not executed.
 Chat invokes real services and can consume credits or change data.
 
 The loopback server requires a random capability for data/actions, checks
-Host/Origin, does not enable CORS, and serves a restrictive CSP. The capability
+Host/Origin, does not enable CORS, and serves a restrictive CSP. Inline styles
+are allowed only so the app can inject its theme; the page builds agent content
+with DOM text nodes, never HTML strings. The capability
 in the canvas URL fragment is local authorization, not a Microsoft token.
 Closing the pane stops owned children and closes the listener.
 
