@@ -189,13 +189,13 @@ export class Chat {
 
     async verifyOpen() {
         await this.start("check");
-        if (this.state.status === "authentication-required") {
+        if (this.state.status === "authentication-required" && !this.state.error) {
             throw new Error("The msagent CLI is signed out. Run `msagent auth create`, then open the canvas again.");
         }
         if (this.state.status !== "ready") throw new Error(this.state.error ?? "The chat target could not be checked.");
     }
 
-    async preflight({ allowSignedOut = false, allowBlocked = false } = {}) {
+    async preflight({ allowSignedOut = false, allowBlocked = false, checkCredentials = false } = {}) {
         if (this.conversationIssue && !allowBlocked) throw new Error("Start a new chat to continue.");
         if (this.requiresReset && !allowBlocked) {
             this.state.status = "uncertain";
@@ -230,6 +230,7 @@ export class Chat {
             throw new Error("The CLI account changed. Start a new conversation before sending.");
         }
         this.identity ??= current;
+        if (checkCredentials) await this.command(["env", "list", "--json", "--non-interactive"]).then(parseResult);
         this.state.status = "ready";
         return status;
     }
@@ -255,10 +256,10 @@ export class Chat {
                 this.requiresReset = true;
                 this.state.status = "uncertain";
                 this.state.error += " Remote effects may have occurred. Check them before starting a new conversation.";
-                this.conversationIssue = error.authRequired
-                    ? "Sign-in failed. Run `msagent auth create` in a terminal, then start a new chat."
-                    : this.startAttempted
-                        ? "The chat couldn't start. Start a new chat to try again."
+                this.conversationIssue = this.startAttempted
+                    ? `The chat couldn't start. ${error.message} Start a new chat to try again.`
+                    : error.authRequired
+                        ? `${error.message} Start a new chat to continue.`
                         : "We couldn't confirm whether the agent received the last message. Start a new chat to continue.";
             } else if (error.authRequired) {
                 this.state.status = "authentication-required";
@@ -306,7 +307,8 @@ export class Chat {
             }
         }
         const live = operation === "send" || operation === "connect";
-        await this.preflight({ allowSignedOut: !live, allowBlocked: operation === "check" });
+        await this.preflight({ allowSignedOut: !live, allowBlocked: operation === "check",
+            checkCredentials: operation === "check" || operation === "connect" });
         if (!live) return;
         if (this.persist) {
             await this.persisting;

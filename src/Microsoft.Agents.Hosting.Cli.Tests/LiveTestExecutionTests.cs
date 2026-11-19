@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Agents.Hosting.Cli.Core.Errors;
 using Microsoft.Agents.Hosting.Cli.Core.ManagedAgents;
 using Microsoft.Agents.Hosting.Cli.Core.Operations;
 using Microsoft.Agents.Hosting.Cli.Rendering;
@@ -91,6 +92,29 @@ public sealed class LiveTestExecutionTests
             Assert.Equal($"CLI: {message} {remediation}{Environment.NewLine}", error.ToString());
             Assert.Empty(output.ToString());
         }
+    }
+
+    [Fact]
+    public async Task CredentialStorageFailureIsNotReportedAsSignIn()
+    {
+        const string message = "Owned protected storage is unavailable (macOS: native-status--25293).";
+        const string remediation = "Check native storage availability.";
+        var execution = new LiveTestExecution(
+            new LiveTestRequest { Query = "hello", Json = true },
+            _ => new LiveTestDestination("synthetic", "tenant", "schema", "configured"),
+            (_, _, _) => throw new CacheProtectionUnavailableException(message, remediation),
+            (_, _, _) => throw new InvalidOperationException("SDK session must not be created."));
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        Assert.Equal(1, await execution.RenderAsync(output, error, false, CancellationToken.None));
+
+        using var json = JsonDocument.Parse(output.ToString());
+        var result = json.RootElement;
+        Assert.Equal("credential-storage-unavailable", result.GetProperty("errorKind").GetString());
+        Assert.Equal(message, result.GetProperty("errorMessage").GetString());
+        Assert.Equal(remediation, result.GetProperty("remediation").GetString());
+        Assert.Equal("not-attempted", result.GetProperty("queryDelivery").GetString());
     }
 
     [Theory]

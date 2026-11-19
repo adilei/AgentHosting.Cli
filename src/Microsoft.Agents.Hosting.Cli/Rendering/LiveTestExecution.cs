@@ -294,6 +294,9 @@ public sealed class LiveTestExecution : ILiveTestStreamingResult, IStreamingFail
         if (failure is NotSignedInException or InteractionRequiredException)
             return new("failed", 3, "authentication-required", "A selected signed-in user is required.",
                 "Run `msagent auth create` for the intended account and cloud; allow consent or remove --non-interactive.");
+        if (failure is CacheProtectionUnavailableException storage)
+            return new("failed", 1, "credential-storage-unavailable", storage.Message,
+                storage.Remediation ?? "Restore access to the platform credential storage; see error 12006.");
         if (failure is AuthenticationException)
             return new("failed", 1, "authentication-failed", "Delegated authentication failed.",
                 "Check the selected account, public-client registration, and delegated consent.");

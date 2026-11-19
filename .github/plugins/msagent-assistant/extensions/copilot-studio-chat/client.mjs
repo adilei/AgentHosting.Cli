@@ -78,14 +78,25 @@ export function parseResult(result) {
     if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid CLI result.");
     if (result.code !== 0 || data.success !== true) {
         const auth = result.code === 3 || ["authentication-required", "authentication-failed"].includes(data.errorKind);
-        const error = new Error(auth
-            ? "Sign-in or Copilot Studio consent is required."
-            : `CLI operation failed${Number.isInteger(data.errorCode) ? ` (${data.errorCode})` : ""}. Check the selected target and CLI setup. No message was retried.`);
+        const code = Number.isInteger(data.errorCode) ? ` (${data.errorCode})` : "";
+        const detail = cliDetail(data);
+        const error = new Error(detail
+            ? `${detail}${code}`
+            : auth
+                ? "Sign-in or Copilot Studio consent is required."
+                : `CLI operation failed${code}. Check the selected target and CLI setup. No message was retried.`);
         error.authRequired = auth;
         error.data = data;
         throw error;
     }
     return data;
+}
+
+function cliDetail(data) {
+    return [data.errorMessage, data.remediation]
+        .filter(value => typeof value === "string" && value.trim())
+        .map(value => value.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 500))
+        .join(" ");
 }
 
 const identifier = /^[a-zA-Z0-9_-]{1,256}$/;

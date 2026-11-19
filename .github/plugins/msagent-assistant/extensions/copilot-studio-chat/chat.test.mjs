@@ -1164,7 +1164,7 @@ test("failed connection starts are not replayed even when no query was attempted
         : undefined);
     await chat.start("connect");
     assert.equal(chat.snapshot().status, "uncertain");
-    assert.equal(chat.snapshot().conversationIssue, "The chat couldn't start. Start a new chat to try again.");
+    assert.match(chat.snapshot().conversationIssue, /^The chat couldn't start\. CLI operation failed\..* Start a new chat to try again\.$/);
     assert.equal(chat.snapshot().connected, false);
     await chat.start("connect");
     assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 1);
@@ -1997,7 +1997,8 @@ test("an uncertain authentication failure during Connect allows connection check
         if (args[1] === "ask" && !args.includes("--help") && first) {
             first = false;
             return json({ success: false, status: "failed", queryDelivery: "not-attempted",
-                errorKind: "authentication-failed", activities: [] }, 1);
+                errorKind: "authentication-failed", errorMessage: "Delegated authentication failed.",
+                remediation: "Check the selected account.", activities: [] }, 1);
         }
     });
     await chat.start("connect");
@@ -2005,7 +2006,8 @@ test("an uncertain authentication failure during Connect allows connection check
     assert.match(chat.state.error, /Remote effects may have occurred/);
     await chat.start("check");
     assert.equal(chat.state.status, "ready");
-    assert.match(chat.snapshot().conversationIssue, /Sign-in failed\. Run `msagent auth create`/);
+    assert.equal(chat.snapshot().conversationIssue,
+        "The chat couldn't start. Delegated authentication failed. Check the selected account. Start a new chat to try again.");
     await chat.start("reset", { reconnect: true });
     assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 2);
     assert.equal(chat.snapshot().connected, true);
@@ -2087,7 +2089,17 @@ test("renderer selects only user-facing final text and flags unsupported cards",
 test("CLI failures and invalid output cannot become successful replies", () => {
     assert.throws(() => parseResult({ code: 0, output: "partial JSON" }), /invalid JSON/);
     assert.throws(() => parseResult(json({ success: true }, 1)), /failed/);
-    assert.throws(() => parseResult(json({ success: false, errorMessage: "sensitive raw data" })), error => !error.message.includes("sensitive"));
+    assert.throws(() => parseResult(json({ success: false, errorCode: 12006, errorMessage: "Storage\nunavailable.",
+        remediation: "x".repeat(600) })), error => error.message === `Storage unavailable. ${"x".repeat(500)} (12006)`);
+});
+
+test("opening fails with the CLI's own error when signed-in credentials cannot be used", async () => {
+    const { chat, calls } = fixture(args => args[0] === "env" ? json({ success: false, exitCode: 1, errorCode: 12006,
+        errorMessage: "Owned protected storage is unavailable.", remediation: "Check native storage." }, 1) : undefined);
+    await assert.rejects(chat.verifyOpen(), error => error.message === "Owned protected storage is unavailable. Check native storage. (12006)");
+    assert(calls.some(args => args.join(" ") === "env list --json --non-interactive"));
+    assert(!calls.some(args => args[1] === "ask" && !args.includes("--help")));
+    assert(!calls.some(args => args[0] === "auth" && ["login", "create"].includes(args[1])));
 });
 
 test("process runner bounds output, propagates exit codes and cancels without a shell", async () => {
