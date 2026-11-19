@@ -27,7 +27,9 @@ export class ActivityReader {
             this.prefix = "";
             this.started = true;
         }
-        for (const character of text) {
+        let recordStart = this.depth > 0 ? 0 : -1;
+        for (let index = 0; index < text.length; index++) {
+            const character = text[index];
             if (this.depth === 0) {
                 if (/\s/.test(character)) continue;
                 if (character === "]") {
@@ -40,11 +42,10 @@ export class ActivityReader {
                     continue;
                 }
                 if (character !== "{") throw new Error("Invalid activity.");
-                this.record = character;
+                recordStart = index;
                 this.depth = 1;
                 continue;
             }
-            this.record += character;
             if (this.quoted) {
                 if (this.escaped) this.escaped = false;
                 else if (character === "\\") this.escaped = true;
@@ -53,11 +54,14 @@ export class ActivityReader {
             else if (character === "{" || character === "[") this.depth++;
             else if (character === "}" || character === "]") this.depth--;
             if (this.depth === 0) {
+                this.record += text.slice(recordStart, index + 1);
                 const activity = JSON.parse(this.record);
                 this.record = "";
+                recordStart = -1;
                 this.separator = true;
                 this.onActivity(activity);
             }
         }
+        if (recordStart >= 0) this.record += text.slice(recordStart);
     }
 }

@@ -12,7 +12,7 @@ It does not embed Playground or start a separate chat browser/terminal.
   there is no claimed released minimum CLI version.
 - The .NET and ASP.NET Core runtimes required by that CLI build.
 - A selected public-cloud, production-ring account with access to the agent.
-  The canvas never signs in; it reuses the CLI account from `msagent auth login`.
+  The canvas never signs in; it reuses the CLI account from `msagent auth create`.
 
 The extension does not install dependencies, upgrade msagent, enable feature
 flags, create app registrations, deploy agents, or publish anything.
@@ -20,8 +20,14 @@ flags, create app registrations, deploy agents, or publish anything.
 ## Open
 
 The runtime discovers this directory in a trusted repository. Reload extensions
-after changes, then ask Copilot to open the **Copilot Studio chat** canvas with
-one explicit target. The canvas type ID is `copilot-studio-chat`.
+after changes. Opening **Copilot Studio chat** from the canvas menu without
+input shows a setup screen; it does not check credentials, run the CLI, or
+start a live conversation. **Choose an agent with Copilot** sends a request to
+the main Copilot chat. Sign-in and agent selection happen there, then Copilot
+configures this same canvas with the selected target and friendly agent name.
+
+Alternatively, ask Copilot to open the canvas with one explicit target.
+The canvas type ID is `copilot-studio-chat`.
 
 Registered target input:
 
@@ -71,27 +77,40 @@ panel ends its backend and discards its transcript.
 
 ## Use
 
-Copilot opens the canvas for an agent it selected. Opening checks command
+Copilot opens a configured canvas for an agent it selected. Opening checks command
 capabilities, local registry association and auth status; it fails if the CLI
-is signed out, so Copilot can run `msagent auth login` and reopen it. Opening
-never signs in. The compact header shows the selected agent and status. Open
-**Connection details** (the three-dot control) for account, environment/tenant
-IDs and status refresh. The canvas reuses the CLI's account; it does not handle
-Entra tokens or run `auth login`. If the CLI signs out or needs consent later,
-the pane shows **Signed out**; sign in again with `msagent auth login`, then
-select **New chat** or retry **Send**. CLI authentication is unchanged.
+is signed out, so Copilot can run `msagent auth create` and reopen it. Opening
+never signs in. The compact header shows the selected agent. Open
+**Connection details** (the info icon) for the CLI account, agent, deployment,
+environment ID and tenant ID. Click outside the panel to close it.
+The canvas reuses the CLI's account; it does not handle Entra tokens or run
+`auth create`. A signed-out or unavailable connection is shown in the header.
+Sign in with `msagent auth create`; the canvas rechecks when it regains focus,
+when starting a new chat, and before sending. CLI authentication is unchanged.
 
 Once the checks pass, opening a new canvas automatically starts a live
 conversation. This runs `test ask --start-conversation --json --non-interactive`
 once, displays any opening activities and retains the returned conversation ID.
 It does not send a synthetic user message. Starting a conversation may itself
 run configured topics/actions, use credits, and an agent is not required to
-provide a greeting. Reopening an open canvas reuses its conversation. Open canvas
-IDs are recorded under
-`$COPILOT_HOME/extensions/copilot-studio-chat/artifacts/started/`. When the
-extension or app restarts, the runtime reopens existing canvases, but they show
-**Conversation ended** and make no live call until you select **New chat**.
-Closing a canvas removes its ID, so opening it again starts a new conversation.
+provide a greeting. Reopening an open canvas reuses its conversation. Each open
+canvas saves its conversation ID, transcript, target and CLI account under
+`$COPILOT_HOME/extensions/copilot-studio-chat/artifacts/started/` (owner-only
+file permissions where supported). When the extension or app restarts, the
+runtime reopens existing canvases and each resumes its own conversation with `--conversation-id`
+without a live call. If the CLI account or resolved target changed, or the last
+turn's outcome was uncertain, the canvas shows the saved transcript with a
+single recovery card explaining why the chat can't continue. The composer is
+disabled until **Start new chat**; no message is replayed.
+Before contacting the agent, the canvas saves an uncertain-turn marker so an
+interrupted process cannot restore the previous conversation as if the turn had
+not happened. If that safety record cannot be saved, the agent is not contacted;
+later save failures are shown without marking a delivered message as unsent.
+Files returned before a restart show their names but must be requested again.
+Closing a canvas deletes its saved conversation, so opening it again starts a
+new one. Saved conversations of panels closed while the extension wasn't
+running, or of deleted sessions, are deleted when the extension starts once
+they're unused for 30 days.
 **New chat** discards the current conversation (or a failed or uncertain one) in
 that canvas only and immediately starts a fresh one. New chat and Send are live
 actions that may use credits or change data.
@@ -119,9 +138,9 @@ granularity depends on what Copilot Studio and the SDK emit, not individual
 tokens. Informative/diagnostic events and unknown delta payloads are not rendered.
 The final JSON result and conversation metadata are validated before the reply
 is marked complete. Interrupted replies retain their text marked incomplete,
-and streams without a final snapshot remain marked incomplete. Cards
-and attachments receive an unsupported-content notice; interactive submissions,
-connector sign-in and durable transcript storage are not supported.
+and streams without a final snapshot remain marked incomplete. Interactive cards
+and unsupported attachments receive a notice; interactive submissions and connector
+sign-in are not supported.
 
 Assistant replies render a safe Markdown subset while updating: headings,
 paragraphs, emphasis, inline/fenced code, simple lists, blockquotes, rules and
@@ -132,26 +151,28 @@ This is not a full CommonMark/GFM implementation; nested lists and advanced
 extensions are not supported. Replies over 100,000 characters or 2,000 rendered
 elements fall back visibly to full plain text. No external renderer is loaded.
 
-**Cancel** stops the local invocation, not remote actions already delivered.
-Unknown outcomes require checking remote effects and selecting **New chat**.
-No message is retried automatically, including after sign-in. If a connected
-chat reports that a message was not attempted because sign-in or consent is
-needed, sign in again, then send the restored draft again. If a
-connection start has an uncertain outcome, check remote effects and select
-**New chat**.
+Closing the canvas stops the local invocation, not remote actions already
+delivered. If we couldn't confirm whether the agent received the last message,
+Chat shows a recovery card; the detailed CLI result remains in Debug. Start a
+new chat to continue. No message is retried automatically, including after
+sign-in. If a connected chat reports that a message was not attempted
+because sign-in or consent is needed, sign in again, then send the restored
+draft again.
 An observed account change also requires a new conversation. A changed
 registered target requires reopening with a new chat ID.
 
-The pane retains drafts on failure. Transcripts are in memory only and disappear
-when the backend/extension/app restarts or the last panel closes. Refreshing the
+The pane retains drafts on failure. Transcripts survive extension/app restarts
+(see above) and are deleted when the panel closes. Refreshing the
 iframe while its backend lives preserves the chat. The limits are 16,000 input
 characters, 100 transcript entries, 1 MB retained transcript, 4 MiB combined CLI
-output per operation and a two-minute operation timeout.
+output for setup and status checks, 16 MiB combined CLI output for live turns,
+and a two-minute operation timeout.
 
 ### Conversation data (JSON)
 
 Use the **Chat / Debug** switch to choose between the rendered conversation and
-raw response data; they are separate views with the same composer and session.
+raw response data; they are separate views of the same session. The message
+composer is hidden in Debug; switch back to Chat to send.
 Chat is selected by default. Debug is an alternate representation of the same
 conversation, not a separate recorder: messages and responses already received
 in Chat are immediately available in Debug. Switching views is presentation-only
@@ -186,8 +207,9 @@ or executable content, and are not written to logs or exposed by canvas actions.
 
 ### Files
 
-Use **Attach files** to select up to five files, at most 10 MiB total. Selection
-stays local until you select **Send** with a nonblank message. Files can be removed
+Use the paperclip icon in the ask box (**Attach files**) to select up to five files,
+at most 10 MiB total. Selection stays local until you select **Send** with a
+nonblank message. Files can be removed
 before sending. The extension stages private temporary files, passes only their
 paths to `test ask --file`, and deletes them after the invocation, including
 failures and cancellation. The transcript retains names and sizes, not upload bytes.
@@ -198,18 +220,21 @@ the protected local gateway and are never fetched automatically. Inline base64
 files and public HTTPS URLs are supported, with a 10 MiB download limit, bounded
 redirects, and no CLI credentials forwarded. Private/loopback destinations and
 links requiring an additional login are not supported. Expired or unsupported
-files report an error rather than retrying the agent.
+files report an error rather than retrying the agent. Inline files also count
+toward the 16 MiB combined live-turn output limit, including any JSON escaping
+and other activities.
 
-Download references are held only in memory with a 10 MiB URL/data budget; older
-references can expire when the limit is reached. New chat clears them. Files are
-saved as attachments, never embedded or executed.
+Download references are held only in memory with a URL/data budget large enough
+for one base64-encoded 10 MiB file and 4 KiB of overhead; older references can
+expire when the limit is reached. New chat clears them. Files are saved as
+attachments, never embedded or executed.
 
 ## Privacy and local access
 
 Microsoft tokens stay in the CLI and its normal secure cache. The renderer and
 extension never request token output. Auth errors are reduced to safe messages;
-stderr and raw auth results are not exposed through canvas actions. The only
-agent-callable action reports status, busy state and message count.
+stderr and raw auth results are not exposed through canvas actions. The actions
+report status and configure an unconfigured panel; neither exposes the transcript.
 
 Messages are passed as literal CLI arguments, not shell commands. Arguments may
 be visible to local process inspection; do not paste credentials. Treat agent
@@ -230,9 +255,9 @@ node --test .github/extensions/copilot-studio-chat/chat.test.mjs
 ```
 
 Tests use fake CLI results and local Node subprocesses, not cached credentials
-or live agents. Reloading extensions ends the in-memory conversations in open
+or live agents. Reloading extensions resumes the conversations in open
 canvases. Discovery, capability and status checks are read-only; opening a new
-canvas starts a live conversation. Live acceptance requires explicit
+configured canvas starts a live conversation. Live acceptance requires explicit
 target/effects approval and a record following `docs/developer/ManualTesting.md`;
 no cross-platform live compatibility is claimed by the offline suite.
 

@@ -42,6 +42,7 @@ export async function startServer(chat) {
         if (request.method === "GET" && route === "/debug") return reply(200, chat.debugSnapshot());
         const download = /^\/files\/([a-f0-9]{32})$/.exec(route);
         if (request.method === "GET" && download) {
+            if (!chat.files) return reply(400, { error: "Choose an agent before downloading files." });
             const controller = new AbortController();
             response.once("close", () => controller.abort());
             void chat.files.download(download[1], controller.signal).then(file => {
@@ -54,7 +55,7 @@ export async function startServer(chat) {
             return;
         }
         if (request.method !== "POST" || request.headers.origin !== origin ||
-            request.headers["content-type"] !== "application/json" || !["/check", "/connect", "/send", "/reset", "/cancel"].includes(route)) {
+            request.headers["content-type"] !== "application/json" || !["/setup", "/check", "/connect", "/send", "/reset", "/cancel"].includes(route)) {
             request.resume();
             return reply(400, { error: "Unsupported request." });
         }

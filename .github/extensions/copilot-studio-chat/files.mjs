@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 export const fileLimit = 10 * 1024 * 1024;
+const referenceLimit = Math.ceil(fileLimit / 3) * 4 + 4096;
 const blocked = new BlockList();
 for (const [address, prefix] of [
     ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
@@ -138,8 +139,8 @@ export class FileDownloads {
         if (existing) return { id: existing, name: this.entries.get(existing).name };
         const name = validName(attachment.name) ? attachment.name : "download";
         const bytes = Buffer.byteLength(url);
-        if (bytes > fileLimit) throw new Error("Returned file data exceeds the 10 MiB limit.");
-        while (this.entries.size && this.bytes + bytes > fileLimit) {
+        if (bytes > referenceLimit) throw new Error("Returned file data exceeds the 10 MiB limit.");
+        while (this.entries.size && this.bytes + bytes > referenceLimit) {
             const [id, oldest] = this.entries.entries().next().value;
             this.bytes -= Buffer.byteLength(oldest.url);
             this.entries.delete(id);

@@ -21,6 +21,20 @@ public sealed class LiveTestCommandHostTests
         Assert.Contains("--file", help.Output, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("@not-a-response-file.txt")]
+    [InlineData("--help")]
+    [InlineData("a=b:c")]
+    public async Task InlineQueryPreservesCommandLikeText(string query)
+    {
+        var handler = new TestHandler();
+        var result = await Invoke(new TestFeatureFlags(FeatureName.LiveTestFeatures), handler,
+            "test", "ask", $"--query={query}", "--json");
+
+        Assert.Equal(0, result.Exit);
+        Assert.Equal(query, handler.Request!.Query);
+    }
+
     [Fact]
     public async Task FeatureGateHidesCommandAndEnabledHostTransfersSoleOutputOwnership()
     {

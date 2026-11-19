@@ -186,16 +186,31 @@ function finishDraft(failed) {
 
 function controls() {
     const busy = stopped || acting || preparingFiles || (state?.busy ?? true);
+    const setup = Boolean(state?.setupRequired);
+    element("setup").hidden = !setup;
+    element("choose-agent").disabled = busy || Boolean(state?.setupRequested);
+    element("setup-description").textContent = state?.setupRequested
+        ? "Continue in the main Copilot chat. This panel will update after you choose an agent."
+        : "Choose your Copilot Studio agent in the main Copilot chat.";
+    element("connection").hidden = setup;
+    element("view-controls").hidden = setup;
+    const conversationBlocked = Boolean(state?.conversationIssue);
     const canConnect = ["ready", "authentication-required"].includes(state?.status);
-    element("files").disabled = preparingFiles;
-    element("send").disabled = busy || !canConnect || !state?.connected || !element("query").value.trim();
-    element("cancel").disabled = acting || !state?.busy;
-    element("check").disabled = busy;
+    element("files").disabled = preparingFiles || conversationBlocked;
+    element("query").disabled = conversationBlocked;
+    element("query").placeholder = conversationBlocked ? "Start a new chat to send a message." : "Ask your agent…";
+    element("send").disabled = busy || conversationBlocked || !canConnect || !state?.connected || !element("query").value.trim();
     element("new-chat").disabled = busy;
+    element("new-chat").hidden = setup || (conversationBlocked && !debugView);
+    element("start-new-chat").disabled = busy;
+    element("start-new-chat").hidden = !conversationBlocked;
+    element("conversation-issue").hidden = !conversationBlocked || debugView;
+    element("conversation-issue-message").textContent = state?.conversationIssue ?? "";
     element("view-chat").setAttribute("aria-pressed", String(!debugView));
     element("view-debug").setAttribute("aria-pressed", String(debugView));
-    element("chat-view").hidden = debugView;
-    element("debug-view").hidden = !debugView;
+    element("chat-view").hidden = setup || debugView;
+    element("debug-view").hidden = setup || !debugView;
+    element("composer").hidden = setup || debugView;
     const replying = (acting && ["send", "connect", "reset"].includes(actingOperation)) ||
         (state?.busy && ["send", "connect"].includes(state.operation));
     element("typing").hidden = !replying;
@@ -207,12 +222,14 @@ async function refreshDebug(force = false) {
     if (!debugView || !state) return;
     if (!force && (debugRevision === state.debugRevision || (state.busy && Date.now() - debugUpdatedAt < 500))) return;
     const { revision, ...debug } = await api("/debug");
-    element("debug-status").textContent = debug.truncated
-        ? "Some raw response details exceeded the 1 MB limit and were omitted. The current chat messages are included."
-        : state.busy ? "Live conversation data. Responses update as they arrive."
-        : debug.responses.some(response => !response.complete) ? "Conversation data includes an incomplete CLI response."
-        : debug.responses.length ? "Current conversation data. Known credentials redacted."
-        : "No conversation data yet.";
+    const status = [
+        state.error ? `Last operation: ${state.error}` : "",
+        debug.truncated ? "Some raw response details exceeded the 1 MB limit and were omitted. The current chat messages are included."
+            : !state.busy && debug.responses.some(response => !response.complete) ? "Conversation data includes an incomplete CLI response."
+            : "",
+    ].filter(Boolean).join("\n");
+    element("debug-status").textContent = status;
+    element("debug-status").hidden = !status;
     renderDebug(debug);
     debugRevision = revision;
     debugUpdatedAt = Date.now();
@@ -225,24 +242,25 @@ async function refresh() {
             finishDraft(Boolean(next.error));
         }
         state = next;
-        element("identity").textContent = state.account ? `CLI account: ${state.account}` : "No signed-in CLI account";
         const target = state.target;
         element("agent").textContent = target.schemaName ?? target.agentId ?? "No agent selected";
         element("agent").title = element("agent").textContent;
-        element("target").textContent = [
-            target.schemaName ?? target.agentId, target.deploymentName ?? target.deploymentId,
-            target.environmentId, target.tenantId && `Tenant ${target.tenantId}`,
-            !target.project && "Explicit target; deployment label is not registry-verified",
-        ].filter(Boolean).join(" · ");
-        element("status").textContent = state.busy ? "Working..."
-            : state.status === "ready" ? state.connected ? "Ready" : state.restored ? "Conversation ended" : "Not connected"
-            : state.status === "authentication-required" ? "Signed out" : "Needs attention";
-        element("status").className = state.busy ? "busy" : state.status;
-        element("status").title = state.status === "ready" && !state.connected && state.restored
-            ? "The canvas restarted, so this conversation ended. Select New chat to start another."
-            : state.status === "ready" ? "Access is checked when sending."
-            : state.status === "authentication-required" ? "The msagent CLI is signed out."
-            : state.status;
+        for (const [id, value] of [
+            ["conn-account", state.account ?? "Not signed in"],
+            ["conn-agent", target.schemaName ?? target.agentId],
+            ["conn-deployment", target.deploymentName ?? target.deploymentId],
+            ["conn-environment", target.environmentId],
+            ["conn-tenant", target.tenantId],
+        ]) element(id).textContent = value || "—";
+        const statusText = !state.busy && state.status === "authentication-required" ? "Signed out"
+            : !state.busy && !state.conversationIssue && !state.saveError && state.status === "error" ? "Connection problem"
+            : "";
+        element("status").textContent = statusText;
+        element("status").hidden = !statusText;
+        element("status").className = state.status;
+        element("status").title = state.status === "authentication-required"
+            ? "Run `msagent auth create`, then return here."
+            : state.status === "error" ? state.error ?? "Check your CLI connection and selected agent." : "";
         const key = JSON.stringify([agentName(), state.messages]);
         const inspecting = state.messages.some(message => messageMenus.get(`${message.turnId}-${message.role}`)?.open);
         if (rendered !== key && !inspecting) {
@@ -251,7 +269,7 @@ async function refresh() {
                 const article = document.createElement("article");
                 article.className = `message ${message.role}`;
                 const label = document.createElement("strong");
-                label.textContent = `${message.role === "user" ? "You" : agentName()}${message.streaming ? " · Streaming..." : message.partial ? " · Incomplete" : ""}`;
+                label.textContent = `${message.role === "user" ? "You" : agentName()}${!message.streaming && message.partial ? " · Incomplete" : ""}`;
                 const text = message.role === "assistant" ? renderMarkdown(message.text, document) : document.createElement("p");
                 if (message.role !== "assistant") text.textContent = message.text;
                 const heading = document.createElement("div");
@@ -294,7 +312,7 @@ async function refresh() {
             rendered = key;
             element("messages").lastElementChild?.scrollIntoView({ block: "end" });
         }
-        showError(state.error);
+        showError([state.conversationIssue ? null : state.error, state.saveError].filter(Boolean).join(" "));
         await refreshDebug();
         controls();
     } catch (error) {
@@ -302,7 +320,7 @@ async function refresh() {
         finishDraft(true);
         element("typing").hidden = true;
         showError(`${error.message} Reopen the canvas if its backend stopped. No message will be replayed.`);
-        for (const id of ["send", "check", "new-chat", "cancel"]) element(id).disabled = true;
+        for (const id of ["send", "new-chat", "start-new-chat", "choose-agent"]) element(id).disabled = true;
     }
 }
 
@@ -326,10 +344,20 @@ async function act(operation, input = {}) {
     }
 }
 
-for (const operation of ["check", "cancel"]) {
-    element(operation).addEventListener("click", () => act(operation));
-}
 element("new-chat").addEventListener("click", () => act("reset", { reconnect: true }));
+element("start-new-chat").addEventListener("click", () => act("reset", { reconnect: true }));
+element("choose-agent").addEventListener("click", () => act("setup"));
+function closeOverlays(target) {
+    for (const overlay of [element("connection"), ...messageMenus.values()]) {
+        if (overlay.open && (!target || !overlay.contains(target))) overlay.open = false;
+    }
+}
+document.addEventListener("click", event => closeOverlays(event.target));
+window.addEventListener("blur", () => closeOverlays());
+const refreshConnectionOnFocus = () => {
+    if (state && !state.setupRequired && !stopped && !acting && !state.busy && state.status !== "ready") return act("check");
+};
+window.addEventListener("focus", refreshConnectionOnFocus);
 element("query").addEventListener("input", () => { draftVersion++; controls(); });
 element("files").addEventListener("change", async () => {
     const selected = Array.from(element("files").files);

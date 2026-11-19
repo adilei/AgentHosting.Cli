@@ -9,7 +9,7 @@ runs in Copilot Studio; the CLI and Playground are clients, not local emulators.
 For an in-app text pane in GitHub Copilot, the optional repository
 [chat canvas](../.github/extensions/copilot-studio-chat/README.md) wraps `test ask`
 without a separate chat browser or terminal. It reuses the CLI sign-in from
-`msagent auth login`; cards are not interactive in this renderer.
+`msagent auth create`; cards are not interactive in this renderer.
 
 ## Billing and channel IDs in usage telemetry
 
@@ -131,7 +131,7 @@ msagent test ask --project <project-path> --agent-name <agentname> --deployment-
 - `--conversation-id` continues an existing conversation; omit it to start a new one (the id is not saved automatically, so save it yourself to continue later).
 - `--non-interactive` fails instead of opening a browser/WAM sign-in prompt; `--json` emits machine-readable output; `--plain` prints only the final response, without transient progress.
 
-Sign in interactively with `msagent auth login` before running unattended
+Sign in interactively with `msagent auth create` before running unattended
 queries. `--json` does not itself prevent authentication prompts, and `--plain`
 cannot be combined with `--json`. The JSON result is one incrementally streamed
 activity/result document, not the ordinary command envelope. Check its final

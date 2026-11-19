@@ -110,6 +110,19 @@ export function validateTarget(target) {
     return { ...target };
 }
 
+export function validateConfiguredInput(input) {
+    if (!input || typeof input !== "object" || Array.isArray(input) ||
+        Object.keys(input).some(key => !["chatId", "target", "agentName", "executablePath"].includes(key)) ||
+        typeof input.chatId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(input.chatId) ||
+        (input.agentName !== undefined && (typeof input.agentName !== "string" || input.agentName.length > 256 || !/\S/.test(input.agentName))) ||
+        (input.executablePath !== undefined && (typeof input.executablePath !== "string" || input.executablePath.length > 4096 ||
+            !path.isAbsolute(input.executablePath) || /[\x00-\x1f]/.test(input.executablePath)))) {
+        throw new Error("Invalid configured canvas input.");
+    }
+    validateTarget(input.target);
+    return input;
+}
+
 export async function resolveTarget(target, command) {
     validateTarget(target);
     if (!target.project) return { ...target };
@@ -136,7 +149,7 @@ export function askArguments(target, query, conversationId) {
     const args = ["test", "ask", "--schema-name", target.schemaName, "--environment-id", target.environmentId,
         "--tenant", target.tenantId, "--json", "--non-interactive"];
     if (query === undefined) args.push("--start-conversation");
-    else args.push("--query", query);
+    else args.push(`--query=${query}`);
     if (target.project) args.push("--project", target.project, "--agent-id", target.agentId, "--deployment-id", target.deploymentId);
     else args.push("--deployment-name", target.deploymentName);
     if (conversationId) args.push("--conversation-id", conversationId);

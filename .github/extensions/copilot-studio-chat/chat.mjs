@@ -4,6 +4,7 @@ import { ConversationData } from "./debug.mjs";
 import { FileDownloads, uploads, withUploadedFiles } from "./files.mjs";
 
 const signInMessage = "The msagent CLI is signed out.";
+const liveOutputLimit = 16 * 1024 * 1024;
 
 export class ChatRegistry {
     constructor(create, onClose = async () => {}) {
@@ -43,6 +44,16 @@ export class ChatRegistry {
         return { status: state.status, busy: state.busy, messageCount: state.messages.length };
     }
 
+    async configure(instanceId, input) {
+        const entry = this.panels.get(instanceId);
+        if (!entry) throw new Error("This chat is closed.");
+        const { chat } = await entry.ready;
+        if (this.panels.get(instanceId) !== entry) throw new Error("This chat is closed.");
+        if (typeof chat.configure !== "function") throw new Error("This canvas already has an agent.");
+        await chat.configure(input);
+        return this.status(instanceId);
+    }
+
     async close(instanceId) {
         const entry = this.panels.get(instanceId);
         if (!entry) return this.closing.get(instanceId);
@@ -77,16 +88,72 @@ export class Chat {
         this.runner = runner;
         this.debug = new ConversationData();
         this.files = new FileDownloads();
-        this.state = { status: "unchecked", busy: false, operation: null, account: null, target: this.target, messages: [], error: null };
+        this.state = { status: "unchecked", busy: false, operation: null, account: null, target: this.target,
+            messages: [], error: null, saveError: null };
     }
 
     snapshot() {
         return structuredClone({ ...this.state, connected: Boolean(this.conversationId),
-            debugRevision: this.debug.revision });
+            conversationIssue: this.conversationIssue ?? null, debugRevision: this.debug.revision });
     }
 
     debugSnapshot() {
         return this.debug.snapshot(this.state.messages);
+    }
+
+    saved() {
+        if (this.conversationIssue && this.restoreRecord) {
+            return { ...this.restoreRecord, conversationIssue: this.conversationIssue,
+                ...(this.requiresReset ? { outcomeUncertain: true } : {}) };
+        }
+        return {
+            target: this.target, resolved: this.resolved, identity: this.identity,
+            conversationId: this.requiresReset ? null : this.conversationId ?? null,
+            ...(this.conversationIssue ? { conversationIssue: this.conversationIssue } : {}),
+            ...(this.requiresReset ? { outcomeUncertain: true } : {}),
+            ...(this.conversationIssue && this.state.error ? { diagnostic: this.state.error.slice(0, 2000) } : {}),
+            messages: this.state.messages.map(({ streaming, files, ...message }) =>
+                files ? { ...message, files: files.map(file => ({ name: file.name })) } : message),
+        };
+    }
+
+    restore(saved) {
+        const uncertainIssue = "We couldn't confirm whether the agent received the last message. Start a new chat to continue.";
+        const genericIssue = "This conversation couldn't be restored. Start a new chat.";
+        const legacyUncertainIssue = savedIssue =>
+            savedIssue === "The last message may have reached the agent. Start a new chat to continue." ||
+            savedIssue.startsWith("The last message may have been delivered");
+        const savedIssue = typeof saved?.conversationIssue === "string" && saved.conversationIssue.length <= 512
+            ? saved.conversationIssue : null;
+        let error = null;
+        if (savedIssue && legacyUncertainIssue(savedIssue)) {
+            error = saved.outcomeUncertain === true ? uncertainIssue : genericIssue;
+        } else if (savedIssue) error = savedIssue;
+        else if (!saved) error = genericIssue;
+        else if (!Array.isArray(saved.messages) || saved.messages.length > 100) error = "The saved conversation could not be read.";
+        else if (!this.identity || saved.identity !== this.identity) error = "The CLI account changed. Start a new chat to use the current account.";
+        else if (JSON.stringify(saved.target) !== JSON.stringify(this.target) ||
+            JSON.stringify(saved.resolved) !== JSON.stringify(this.resolved)) {
+            error = "The agent changed. Start a new chat to use the current agent.";
+        } else if (typeof saved.conversationId !== "string" || !saved.conversationId) {
+            error = saved.outcomeUncertain === true ? uncertainIssue : genericIssue;
+        } else if (/[\x00-\x20/\\?#%]/.test(saved.conversationId) || saved.conversationId.length > 1024) {
+            error = "The saved conversation could not be read.";
+        }
+        if (Array.isArray(saved?.messages) && saved.messages.length <= 100) this.state.messages = saved.messages;
+        if (error) {
+            this.conversationIssue = error;
+            this.restoreRecord = saved && typeof saved === "object" ? saved : null;
+            this.state.status = "error";
+            this.state.error = typeof saved?.diagnostic === "string" && saved.diagnostic.length <= 2000
+                ? saved.diagnostic : null;
+        } else {
+            this.conversationIssue = null;
+            this.restoreRecord = null;
+            this.conversationId = saved.conversationId;
+        }
+        this.debug.revision++;
+        return !error;
     }
 
     async command(args, options = {}) {
@@ -110,20 +177,23 @@ export class Chat {
     async verifyOpen() {
         await this.start("check");
         if (this.state.status === "authentication-required") {
-            throw new Error("The msagent CLI is signed out. Run `msagent auth login`, then open the canvas again.");
+            throw new Error("The msagent CLI is signed out. Run `msagent auth create`, then open the canvas again.");
         }
         if (this.state.status !== "ready") throw new Error(this.state.error ?? "The chat target could not be checked.");
     }
 
-    async preflight({ allowSignedOut = false } = {}) {
-        if (this.requiresReset) {
+    async preflight({ allowSignedOut = false, allowBlocked = false } = {}) {
+        if (this.conversationIssue && !allowBlocked) throw new Error("Start a new chat to continue.");
+        if (this.requiresReset && !allowBlocked) {
             this.state.status = "uncertain";
+            this.conversationIssue = "We couldn't confirm whether the agent received the last message. Start a new chat to continue.";
             throw new Error("The previous message may have been delivered. Check remote effects, then start a new conversation.");
         }
         await this.checkCapabilities();
         const resolved = await resolveTarget(this.target, args => this.command(args));
         if (this.resolved && JSON.stringify(this.resolved) !== JSON.stringify(resolved)) {
             this.state.status = "changed";
+            this.conversationIssue = "The selected agent or deployment changed. Start a new chat to use it.";
             throw new Error("The selected target changed. Open a new canvas for that target; this conversation was not reused.");
         }
         this.resolved = resolved;
@@ -132,7 +202,8 @@ export class Chat {
         this.state.account = status.account ?? null;
         if (!status.signedIn) {
             if (this.identity) {
-                this.state.status = "changed";
+                this.state.status = "authentication-required";
+                this.conversationIssue = "The CLI account is signed out. Sign in, then start a new chat.";
                 throw new Error("The CLI account changed or signed out. Start a new conversation.");
             }
             this.state.status = "authentication-required";
@@ -142,6 +213,7 @@ export class Chat {
         const current = identity(status);
         if (this.identity && this.identity !== current) {
             this.state.status = "changed";
+            this.conversationIssue = "The CLI account changed. Start a new chat to use the current account.";
             throw new Error("The CLI account changed. Start a new conversation before sending.");
         }
         this.identity ??= current;
@@ -170,6 +242,7 @@ export class Chat {
                 this.requiresReset = true;
                 this.state.status = "uncertain";
                 this.state.error += " Remote effects may have occurred. Check them before starting a new conversation.";
+                this.conversationIssue = "We couldn't confirm whether the agent received the last message. Start a new chat to continue.";
             } else if (error.authRequired) {
                 this.state.status = "authentication-required";
             } else if (!["changed", "authentication-required", "uncertain"].includes(this.state.status)) {
@@ -188,6 +261,15 @@ export class Chat {
             this.turnAttempted = false;
             this.startAttempted = false;
             this.debug.revision++;
+            if (this.persist) {
+                const data = this.saved();
+                this.persisting = (this.persisting ?? Promise.resolve()).then(() => this.persist(data)).then(() => {
+                    this.state.saveError = null;
+                }, () => {
+                    this.state.saveError = "This chat could not be saved and may be lost if the app closes.";
+                    if (this.state.status === "ready") this.state.status = "error";
+                });
+            }
         });
         return this.pending;
     }
@@ -195,6 +277,8 @@ export class Chat {
     async perform(operation, input, attachments) {
         if (operation === "reset") {
             this.requiresReset = false;
+            this.conversationIssue = null;
+            this.restoreRecord = null;
             this.identity = null;
             this.conversationId = null;
             this.state.messages = [];
@@ -205,8 +289,23 @@ export class Chat {
             }
         }
         const live = operation === "send" || operation === "connect";
-        await this.preflight({ allowSignedOut: !live });
+        await this.preflight({ allowSignedOut: !live, allowBlocked: operation === "check" });
         if (!live) return;
+        if (this.persist) {
+            await this.persisting;
+            try {
+                await this.persist({
+                    ...this.saved(),
+                    conversationIssue: operation === "connect"
+                        ? "The chat may not have finished starting. Check the agent before starting a new chat."
+                        : "We couldn't confirm whether the agent received the last message. Start a new chat to continue.",
+                    outcomeUncertain: true,
+                });
+                this.state.saveError = null;
+            } catch {
+                throw new Error("The chat could not be saved, so the agent was not contacted. Check local storage and try again.");
+            }
+        }
         const turnId = this.debug.begin(operation);
         if (operation === "send") this.state.messages.push({ role: "user", text: input.query, turnId,
             ...(attachments.length ? { files: attachments.map(file => ({ name: file.name, size: file.size })) } : {}) });
@@ -245,7 +344,7 @@ export class Chat {
                 for (const file of paths) args.push("--file", file);
                 this.turnAttempted = true;
                 this.startAttempted = operation === "connect";
-                return parseResult(await this.command(args, { onStdout: text => reader.push(text) }));
+                return parseResult(await this.command(args, { limit: liveOutputLimit, onStdout: text => reader.push(text) }));
             });
             this.debug.finish(data);
             if (data.schemaVersion !== "1" || data.status !== "completed" || data.exitCode !== 0 ||
@@ -271,5 +370,6 @@ export class Chat {
     async close() {
         this.cancel();
         await this.pending;
+        await this.persisting;
     }
 }

@@ -16,7 +16,7 @@ This repository includes an optional
 for GitHub Copilot app hosts supporting extension canvases. It runs `test ask`
 in the background and keeps chat inside the app, with progressive reply updates
 and safe Markdown formatting. Update granularity depends on activities emitted
-by the agent and SDK. It reuses the CLI account from `msagent auth login` and
+by the agent and SDK. It reuses the CLI account from `msagent auth create` and
 never signs in itself; no chat browser or terminal is used. See the extension
 guide for exact target selection, setup and limitations. Live conversation
 starts and sends may consume credits or affect real data.
