@@ -1624,7 +1624,7 @@ test("new panels start independently, and restarted panels resume their own conv
                 if (args[0] === "auth") return json(signedInAs);
                 if (args.includes("--start-conversation")) return json({ ...outcome, conversationId: `conversation-${context.instanceId}-${++next}` });
                 if (args.includes("--conversation-id")) return json({ ...outcome, conversationId: args[args.indexOf("--conversation-id") + 1] });
-            });
+            }, input.target);
             await chat.verifyOpen();
             await (await attachChat(chat, started, context.sessionId, context.instanceId)).pending;
             await chat.persisting;
@@ -1642,7 +1642,8 @@ test("new panels start independently, and restarted panels resume their own conv
         await initial.closeAll();
 
         const restored = registry();
-        const [oldOne, oldTwo] = await Promise.all([restored.open("one", input, context), restored.open("two", input, context)]);
+        const reordered = { chatId: "shared", target: Object.fromEntries(Object.entries(target).reverse()) };
+        const [oldOne, oldTwo] = await Promise.all([restored.open("one", reordered, context), restored.open("two", input, context)]);
         assert.equal(starts(oldOne), 0);
         assert.equal(starts(oldTwo), 0);
         assert.equal(oldOne.chat.snapshot().connected, true);
@@ -1652,6 +1653,12 @@ test("new panels start independently, and restarted panels resume their own conv
         assert(oldOne.calls.at(-2).includes("conversation-one-1"));
         assert.equal(starts(oldTwo), 0);
         await restored.closeAll();
+
+        await started.save(context.sessionId, "one", { ...(await started.load(context.sessionId, "one")),
+            conversationIssue: "The agent changed. Start a new chat to use the current agent." });
+        const recovered = registry();
+        assert.equal((await recovered.open("one", input, context)).chat.snapshot().error, null);
+        await recovered.closeAll();
 
         signedInAs = { ...account, account: "different@example.test" };
         const otherAccount = registry();

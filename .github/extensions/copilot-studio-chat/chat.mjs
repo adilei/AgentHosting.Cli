@@ -6,6 +6,11 @@ import { FileDownloads, uploads, withUploadedFiles } from "./files.mjs";
 const signInMessage = "The msagent CLI is signed out.";
 const liveOutputLimit = 16 * 1024 * 1024;
 
+function stableJson(value) {
+    return JSON.stringify(value, (name, entry) => entry && typeof entry === "object" && !Array.isArray(entry)
+        ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : entry);
+}
+
 export class ChatRegistry {
     constructor(create, onClose = async () => {}) {
         this.create = create;
@@ -17,9 +22,7 @@ export class ChatRegistry {
     async open(instanceId, input, context = {}) {
         const closing = this.closing.get(instanceId);
         if (closing) await closing;
-        const key = JSON.stringify({ ...input, agentName: undefined },
-            (name, value) => value && typeof value === "object" && !Array.isArray(value)
-                ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value);
+        const key = stableJson({ ...input, agentName: undefined });
         let entry = this.panels.get(instanceId);
         if (entry && entry.key !== key) throw new Error("Use a new panel when changing chats.");
         if (!entry) {
@@ -126,8 +129,9 @@ export class Chat {
         const legacyUncertainIssue = savedIssue =>
             savedIssue === "The last message may have reached the agent. Start a new chat to continue." ||
             savedIssue.startsWith("The last message may have been delivered");
-        const savedIssue = typeof saved?.conversationIssue === "string" && saved.conversationIssue.length <= 512
-            ? saved.conversationIssue : null;
+        const targetIssue = "The agent changed. Start a new chat to use the current agent.";
+        const savedIssue = typeof saved?.conversationIssue === "string" && saved.conversationIssue.length <= 512 &&
+            saved.conversationIssue !== targetIssue ? saved.conversationIssue : null;
         let error = null;
         if (savedIssue && legacyUncertainIssue(savedIssue)) {
             error = saved.outcomeUncertain === true ? uncertainIssue : genericIssue;
@@ -135,9 +139,9 @@ export class Chat {
         else if (!saved) error = genericIssue;
         else if (!Array.isArray(saved.messages) || saved.messages.length > 100) error = "The saved conversation could not be read.";
         else if (!this.identity || saved.identity !== this.identity) error = "The CLI account changed. Start a new chat to use the current account.";
-        else if (JSON.stringify(saved.target) !== JSON.stringify(this.target) ||
-            JSON.stringify(saved.resolved) !== JSON.stringify(this.resolved)) {
-            error = "The agent changed. Start a new chat to use the current agent.";
+        else if (stableJson(saved.target) !== stableJson(this.target) ||
+            stableJson(saved.resolved) !== stableJson(this.resolved)) {
+            error = targetIssue;
         } else if (typeof saved.conversationId !== "string" || !saved.conversationId) {
             error = saved.outcomeUncertain === true ? uncertainIssue : genericIssue;
         } else if (/[\x00-\x20/\\?#%]/.test(saved.conversationId) || saved.conversationId.length > 1024) {
@@ -198,7 +202,7 @@ export class Chat {
         }
         await this.checkCapabilities();
         const resolved = await resolveTarget(this.target, args => this.command(args));
-        if (this.resolved && JSON.stringify(this.resolved) !== JSON.stringify(resolved)) {
+        if (this.resolved && stableJson(this.resolved) !== stableJson(resolved)) {
             this.state.status = "changed";
             this.conversationIssue = "The selected agent or deployment changed. Start a new chat to use it.";
             throw new Error("The selected target changed. Open a new canvas for that target; this conversation was not reused.");
