@@ -147,6 +147,9 @@ function renderDebug(debug) {
         else parts.push(node);
         return node;
     };
+    const lineBreak = parent => {
+        add("\n", parent).className = "debug-break";
+    };
     const streaming = activity => {
         if (!["message", "typing"].includes(activity?.type) || !Array.isArray(activity.entities)) return false;
         const info = activity.entities.find(entity => typeof entity?.type === "string" && entity.type.toLowerCase() === "streaminfo");
@@ -157,9 +160,12 @@ function renderDebug(debug) {
     for (const name of ["messages", "responses"]) {
         if (name === "responses") add(",\n");
         add(`  "${name}": [`);
+        let previous;
         debug[name].forEach((value, index) => {
-            add(index ? ",\n" : "\n");
+            if (previous) add(",", previous);
+            lineBreak();
             const node = document.createElement("div");
+            previous = node;
             node.id = `debug-${name === "messages" ? `message-${value.turnId}-${value.role}` : `response-${value.turnId}`}`;
             node.tabIndex = -1;
             node.className = "debug-entry";
@@ -176,10 +182,13 @@ function renderDebug(debug) {
             const write = (entry, depth) => {
                 if (entry === activities) {
                     add("[", node);
+                    let afterGroup = false;
                     for (let first = 0; first < entry.length;) {
                         let end = first + 1;
                         if (streaming(entry[first])) {
                             while (end < entry.length && streaming(entry[end])) end++;
+                            if (first) add(",", node);
+                            lineBreak(node);
                             const key = `${value.turnId ?? index}-${group++}`;
                             const details = document.createElement("details");
                             details.className = "debug-stream";
@@ -189,20 +198,28 @@ function renderDebug(debug) {
                             details.append(summary);
                             node.append(details);
                             debugStreams.set(key, details);
-                            const text = entry.slice(first, end).map((activity, offset) =>
-                                `${first + offset ? ",\n" : "\n"}${indent(depth + 1)}${format(activity, depth + 1)}`).join("");
+                            const text = entry.slice(first, end).map(activity =>
+                                `${indent(depth + 1)}${format(activity, depth + 1)}`).join(",\n") + (end < entry.length ? "," : "");
                             const content = add(text, details, details);
                             details.addEventListener("toggle", () => {
                                 if (debugStreams.get(key) !== details) return;
                                 content.textContent = details.open ? text : "";
                                 searchDebug();
                             });
+                            afterGroup = true;
+                        } else if (afterGroup) {
+                            lineBreak(node);
+                            add(`${indent(depth + 1)}${format(entry[first], depth + 1)}`, node);
+                            afterGroup = false;
                         } else {
                             add(`${first ? ",\n" : "\n"}${indent(depth + 1)}${format(entry[first], depth + 1)}`, node);
                         }
                         first = end;
                     }
-                    add(entry.length ? `\n${indent(depth)}]` : "]", node);
+                    if (afterGroup) {
+                        lineBreak(node);
+                        add(`${indent(depth)}]`, node);
+                    } else add(entry.length ? `\n${indent(depth)}]` : "]", node);
                 } else if (entry === value || entry === value.payload) {
                     add("{", node);
                     Object.entries(entry).forEach(([key, child], index) => {
@@ -215,7 +232,10 @@ function renderDebug(debug) {
             add("    ", node);
             write(value, 2);
         });
-        add(debug[name].length ? "\n  ]" : "]");
+        if (debug[name].length) {
+            lineBreak();
+            add("  ]");
+        } else add("]");
     }
     add(`,\n  "truncated": ${JSON.stringify(debug.truncated)}\n}`);
     debugText = debugSegments.map(segment => segment.text).join("");

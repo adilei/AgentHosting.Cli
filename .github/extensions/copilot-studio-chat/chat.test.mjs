@@ -872,6 +872,11 @@ test("Debug lazily collapses streaming runs while keeping final replies and othe
         assert(get("debug-output").textContent.includes(text));
     }
     assert.match(get("debug-status").textContent, /omitted/);
+    for (const group of groups()) {
+        const siblings = descendants(get("debug-output")).find(node => node.children.includes(group)).children;
+        const next = siblings[siblings.indexOf(group) + 1];
+        assert.equal(next.className, "debug-break");
+    }
 
     for (const group of groups()) {
         group.open = true;
