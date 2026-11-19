@@ -255,7 +255,11 @@ export class Chat {
                 this.requiresReset = true;
                 this.state.status = "uncertain";
                 this.state.error += " Remote effects may have occurred. Check them before starting a new conversation.";
-                this.conversationIssue = "We couldn't confirm whether the agent received the last message. Start a new chat to continue.";
+                this.conversationIssue = error.authRequired
+                    ? "Sign-in failed. Run `msagent auth create` in a terminal, then start a new chat."
+                    : this.startAttempted
+                        ? "The chat couldn't start. Start a new chat to try again."
+                        : "We couldn't confirm whether the agent received the last message. Start a new chat to continue.";
             } else if (error.authRequired) {
                 this.state.status = "authentication-required";
             } else if (!["changed", "authentication-required", "uncertain"].includes(this.state.status)) {

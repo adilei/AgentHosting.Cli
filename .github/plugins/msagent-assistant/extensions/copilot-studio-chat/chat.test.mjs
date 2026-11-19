@@ -1164,6 +1164,7 @@ test("failed connection starts are not replayed even when no query was attempted
         : undefined);
     await chat.start("connect");
     assert.equal(chat.snapshot().status, "uncertain");
+    assert.equal(chat.snapshot().conversationIssue, "The chat couldn't start. Start a new chat to try again.");
     assert.equal(chat.snapshot().connected, false);
     await chat.start("connect");
     assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 1);
@@ -1996,7 +1997,7 @@ test("an uncertain authentication failure during Connect allows connection check
         if (args[1] === "ask" && !args.includes("--help") && first) {
             first = false;
             return json({ success: false, status: "failed", queryDelivery: "not-attempted",
-                errorKind: "authentication-required", activities: [] }, 3);
+                errorKind: "authentication-failed", activities: [] }, 1);
         }
     });
     await chat.start("connect");
@@ -2004,7 +2005,7 @@ test("an uncertain authentication failure during Connect allows connection check
     assert.match(chat.state.error, /Remote effects may have occurred/);
     await chat.start("check");
     assert.equal(chat.state.status, "ready");
-    assert.match(chat.snapshot().conversationIssue, /couldn't confirm whether the agent received/);
+    assert.match(chat.snapshot().conversationIssue, /Sign-in failed\. Run `msagent auth create`/);
     await chat.start("reset", { reconnect: true });
     assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 2);
     assert.equal(chat.snapshot().connected, true);

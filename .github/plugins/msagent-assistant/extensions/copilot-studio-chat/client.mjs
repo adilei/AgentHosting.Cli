@@ -77,7 +77,7 @@ export function parseResult(result) {
     catch { throw new Error("The CLI returned incomplete or invalid JSON. No message was retried."); }
     if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid CLI result.");
     if (result.code !== 0 || data.success !== true) {
-        const auth = result.code === 3 || data.errorKind === "authentication-required";
+        const auth = result.code === 3 || ["authentication-required", "authentication-failed"].includes(data.errorKind);
         const error = new Error(auth
             ? "Sign-in or Copilot Studio consent is required."
             : `CLI operation failed${Number.isInteger(data.errorCode) ? ` (${data.errorCode})` : ""}. Check the selected target and CLI setup. No message was retried.`);
