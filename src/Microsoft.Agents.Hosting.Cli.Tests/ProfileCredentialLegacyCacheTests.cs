@@ -357,6 +357,8 @@ public sealed class ProfileCredentialLegacyCacheTests
         var failure = await Assert.ThrowsAsync<CacheProtectionUnavailableException>(() => backend.ReadAsync(default));
         Assert.Contains("native-status--25293", failure.Message);
         Assert.Contains("Keychain Access", failure.Remediation);
+        Assert.Contains($"this executable: {Environment.ProcessPath}.", failure.Remediation);
+        Assert.DoesNotContain("readlink", failure.Remediation);
         Assert.Contains("msagent auth create", failure.Remediation);
     }
 
