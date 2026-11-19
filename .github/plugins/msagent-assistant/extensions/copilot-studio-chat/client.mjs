@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, realpath } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import path from "node:path";
 
 export async function resolveExecutable(configured, environment = process.env) {
@@ -12,7 +12,7 @@ export async function resolveExecutable(configured, environment = process.env) {
         if (!path.isAbsolute(candidate)) throw new Error("The msagent executable path must be absolute.");
         try {
             await access(candidate, constants.X_OK);
-            return await realpath(candidate);
+            return candidate;
         } catch (error) {
             if (!["ENOENT", "ENOTDIR", "EACCES"].includes(error.code)) throw error;
         }
@@ -79,7 +79,7 @@ export function parseResult(result) {
     if (result.code !== 0 || data.success !== true) {
         const auth = result.code === 3 || ["authentication-required", "authentication-failed"].includes(data.errorKind);
         const code = Number.isInteger(data.errorCode) ? ` (${data.errorCode})` : "";
-        const detail = cliDetail(data);
+        const detail = cliDetail(data, auth);
         const error = new Error(detail
             ? `${detail}${code}`
             : auth
@@ -93,7 +93,7 @@ export function parseResult(result) {
 }
 
 const displayableKinds = new Set(["authentication-required", "authentication-failed", "credential-storage-unavailable", "identity-mismatch"]);
-const displayableCodes = new Set([12006]);
+const isAuthenticationCode = code => Number.isInteger(code) && code >= 12000 && code < 13000;
 const secretPatterns = [
     /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
     /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g,
@@ -106,8 +106,8 @@ function redact(value) {
     return secretPatterns.reduce((text, pattern) => text.replace(pattern, "[redacted]"), value);
 }
 
-function cliDetail(data) {
-    if (!displayableKinds.has(data.errorKind) && !displayableCodes.has(data.errorCode)) return "";
+function cliDetail(data, auth) {
+    if (!auth && !displayableKinds.has(data.errorKind) && !isAuthenticationCode(data.errorCode)) return "";
     return [data.errorMessage, data.remediation]
         .filter(value => typeof value === "string" && value.trim())
         .map(value => redact(value.replace(/[\x00-\x1f\x7f]+/g, " ")).trim().slice(0, 500).trim())

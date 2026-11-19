@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { request } from "node:http";
-import { access, mkdtemp, readdir, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
@@ -2116,6 +2116,13 @@ test("opening fails with the CLI's own error when signed-in credentials cannot b
     assert(!calls.some(args => args[0] === "auth" && ["login", "create"].includes(args[1])));
 });
 
+test("opening shows the CLI's guidance when the token needs an explicit sign-in", async () => {
+    const { chat } = fixture(args => args[0] === "env" ? json({ success: false, exitCode: 3, errorCode: 12007,
+        errorMessage: "The profile requires explicit sign-in to renew its token.", remediation: "Run `msagent auth create`." }, 3) : undefined);
+    await assert.rejects(chat.verifyOpen(), error => error.message ===
+        `The profile requires explicit sign-in to renew its token. Run \`msagent auth create\`. (12007) ${openFailureGuidance}`);
+});
+
 test("process runner bounds output, propagates exit codes and cancels without a shell", async () => {
     const result = await runCommand(process.execPath, ["-e", "process.stdout.write(JSON.stringify({success:true}));process.exitCode=2"]);
     assert.equal(result.code, 2);
@@ -2126,9 +2133,20 @@ test("process runner bounds output, propagates exit codes and cancels without a 
     controller.abort();
     await assert.rejects(running, /Cancelled/);
     await assert.rejects(runCommand(process.execPath, ["-e", "setInterval(()=>{},1000)"], { timeout: 10 }), /timed out/);
-    assert.equal(await resolveExecutable(process.execPath), await realpath(process.execPath));
+    assert.equal(await resolveExecutable(process.execPath), process.execPath);
     await assert.rejects(resolveExecutable("./msagent"), /absolute/);
     await assert.rejects(resolveExecutable(undefined, { PATH: "." }), /not found/);
+});
+
+test("the CLI is launched through its PATH entry, not the resolved symlink target", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "msagent-path-"));
+    try {
+        const link = path.join(directory, process.platform === "win32" ? "msagent.exe" : "msagent");
+        await symlink(process.execPath, link);
+        assert.equal(await resolveExecutable(undefined, { PATH: directory }), link);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
 });
 
 test("HTTP gateway enforces capability, Host, Origin and content type and closes cleanly", async () => {
