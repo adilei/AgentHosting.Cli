@@ -11,6 +11,15 @@ function stableJson(value) {
         ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : entry);
 }
 
+function transcriptMessages(messages) {
+    return messages.map(message => ({
+        role: message.role,
+        text: message.text,
+        ...(message.partial ? { partial: true } : {}),
+        ...(message.files?.length ? { files: message.files.map(file => file.name) } : {}),
+    }));
+}
+
 export class ChatRegistry {
     constructor(create, onClose = async () => {}) {
         this.create = create;
@@ -47,6 +56,29 @@ export class ChatRegistry {
         const { chat } = await entry.ready;
         const state = chat.snapshot();
         return { status: state.status, busy: state.busy, messageCount: state.messages.length };
+    }
+
+    async send(instanceId, query) {
+        const { chat } = await this.ready(instanceId);
+        const before = chat.snapshot().messages.length;
+        await chat.start("send", { query });
+        const state = chat.snapshot();
+        if (state.error) throw new Error(state.error);
+        return { status: state.status, replies: transcriptMessages(state.messages.slice(before)).filter(entry => entry.role === "assistant") };
+    }
+
+    async transcript(instanceId) {
+        const { chat } = await this.ready(instanceId);
+        const state = chat.snapshot();
+        return { status: state.status, busy: state.busy, error: state.error ?? null, messages: transcriptMessages(state.messages) };
+    }
+
+    async ready(instanceId) {
+        const entry = this.panels.get(instanceId);
+        if (!entry) throw new Error("This chat is closed.");
+        const resource = await entry.ready;
+        if (this.panels.get(instanceId) !== entry) throw new Error("This chat is closed.");
+        return resource;
     }
 
     async configure(instanceId, input) {

@@ -100,6 +100,26 @@ const session = await joinSession({
                 catch (error) { throw new CanvasError("chat_closed", error.message); }
             },
         }, {
+            name: "send_message",
+            description: "Send a message to the agent in this chat as the user, shown in the panel, and wait for the reply. " +
+                "Only send what the user asked you to; each message is a live call to the agent.",
+            inputSchema: {
+                type: "object", additionalProperties: false, required: ["text"],
+                properties: { text: { type: "string", minLength: 1, maxLength: 16_000, pattern: "\\S" } },
+            },
+            handler: async ctx => {
+                try { return await registry.send(ctx.instanceId, ctx.input.text); }
+                catch (error) { throw new CanvasError("chat_send_failed", error.message); }
+            },
+        }, {
+            name: "get_transcript",
+            description: "Read the conversation shown in this chat, including messages the user sent in the panel.",
+            inputSchema: { type: "object", additionalProperties: false },
+            handler: async ctx => {
+                try { return await registry.transcript(ctx.instanceId); }
+                catch (error) { throw new CanvasError("chat_closed", error.message); }
+            },
+        }, {
             name: "configure",
             description: "Configure this existing setup canvas after the user selects an agent; starts a live conversation.",
             inputSchema: configuredInputSchema,

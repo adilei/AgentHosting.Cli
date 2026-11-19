@@ -1518,6 +1518,27 @@ test("closing while setup is being saved never starts a live conversation", asyn
     }
 });
 
+test("Copilot can send a message through the panel and read the whole transcript", async () => {
+    let fail = false;
+    const current = fixture(args => fail && args[1] === "ask"
+        ? json({ success: false, exitCode: 3, errorKind: "authentication", errorMessage: "Sign in again." }, 3) : undefined);
+    const registry = new ChatRegistry(async () => ({ chat: current.chat, server: { close: async () => {} } }));
+    const { chat } = await registry.open("panel", { chatId: "copilot", target });
+    await chat.start("connect");
+    await chat.start("send", { query: "From the user" });
+    assert.deepEqual(await registry.send("panel", "From Copilot"), { status: "ready", replies: [{ role: "assistant", text: "Hello" }] });
+    const transcript = await registry.transcript("panel");
+    assert.deepEqual(transcript.messages.map(message => [message.role, message.text]), [
+        ["assistant", "Hello"], ["user", "From the user"], ["assistant", "Hello"], ["user", "From Copilot"], ["assistant", "Hello"],
+    ]);
+    assert.equal(transcript.error, null);
+    fail = true;
+    await assert.rejects(registry.send("panel", "Again"), /Sign in again/);
+    await registry.close("panel");
+    await assert.rejects(registry.send("panel", "Closed"), /closed/);
+    await assert.rejects(registry.transcript("panel"), /closed/);
+});
+
 function fixture(override = () => undefined, selected = target) {
     const calls = [];
     const runner = async (executable, args, options) => {

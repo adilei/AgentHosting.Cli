@@ -256,7 +256,12 @@ attachments, never embedded or executed.
 Microsoft tokens stay in the CLI and its normal secure cache. The renderer and
 extension never request token output. Auth errors are reduced to safe messages;
 stderr and raw auth results are not exposed through canvas actions. The actions
-report status and configure an unconfigured panel; neither exposes the transcript.
+report status, configure an unconfigured panel, send a message as the user
+(`send_message`) and read the conversation (`get_transcript`). A message Copilot
+sends appears in the panel like a typed one and is a live call to the agent.
+`get_transcript` returns the role, text, partial flag and file names of every
+message, including those typed in the panel; it does not return Debug data or
+file contents.
 
 Messages are passed as literal CLI arguments, not shell commands. Arguments may
 be visible to local process inspection; do not paste credentials. Treat agent
