@@ -88,8 +88,10 @@ never signs in. The compact header shows the selected agent. Open
 environment ID and tenant ID. Click outside the panel to close it.
 The canvas reuses the CLI's account; it does not handle Entra tokens or run
 `auth create`. A signed-out or unavailable connection is shown in the header.
-Sign in with `msagent auth create`; the canvas rechecks when it regains focus,
-when starting a new chat, and before sending. CLI authentication is unchanged.
+Sign in with `msagent auth create`; the canvas rechecks when it opens, when it
+regains focus and when starting a new chat. Sending runs only `test ask`, so the
+message appears at once; a sign-in failure is reported from that call. CLI
+authentication is unchanged.
 
 Once the checks pass, opening a new canvas automatically starts a live
 conversation. This runs `test ask --start-conversation --json --non-interactive`

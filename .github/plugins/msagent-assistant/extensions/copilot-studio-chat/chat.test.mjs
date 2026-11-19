@@ -1653,7 +1653,7 @@ test("new panels start independently, and restarted panels resume their own conv
         assert.equal(oldOne.chat.snapshot().error, null);
         assert.deepEqual(oldOne.chat.snapshot().messages.map(message => message.text), ["Hello", "Remember me", "Hello"]);
         await oldOne.chat.start("send", { query: "Still there?" });
-        assert(oldOne.calls.at(-2).includes("conversation-one-1"));
+        assert(oldOne.calls.at(-1).includes("conversation-one-1"));
         assert.equal(starts(oldTwo), 0);
         await restored.closeAll();
 
@@ -1940,13 +1940,14 @@ test("Connect never runs sign-in and starts after external CLI sign-in", async (
     assert(!calls.some(args => args[0] === "auth" && ["login", "create"].includes(args[1])));
 });
 
-test("identity changes stop continuation and require explicit reset", async () => {
+test("identity changes found when the canvas is checked stop continuation and require explicit reset", async () => {
     let current = account;
     const { chat, calls } = fixture(args => args[1] === "status" ? json(current) : undefined);
     await chat.start("send", { query: "Hi" });
     current = { ...account, account: "different@example.test" };
-    await chat.start("send", { query: "Next" });
+    await chat.start("check");
     assert.equal(chat.state.status, "changed");
+    await chat.start("send", { query: "Next" });
     assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 1);
     await chat.start("reset");
     assert.equal(chat.state.status, "ready");
@@ -2013,14 +2014,18 @@ test("an uncertain authentication failure during Connect allows connection check
     assert.equal(chat.snapshot().connected, true);
 });
 
-test("a different CLI account cannot continue the existing conversation", async () => {
+test("sends skip CLI checks, and a reopened canvas blocks a different CLI account", async () => {
     let active = account;
     const { chat, calls } = fixture(args => args[1] === "status" ? json(active) : undefined);
     await chat.start("connect");
-    active = { ...account, account: "different@example.test" };
+    const checks = calls.length;
     await chat.start("send", { query: "Hi" });
+    assert.deepEqual(calls.slice(checks).map(args => args.slice(0, 2)), [["test", "ask"]]);
+    active = { ...account, account: "different@example.test" };
+    await chat.start("check");
     assert.equal(chat.state.status, "changed");
-    assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 1);
+    await chat.start("send", { query: "Again" });
+    assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 2);
 });
 
 test("cancellation and close abort only the owned invocation and block concurrent operations", async () => {
@@ -2054,8 +2059,9 @@ test("registered target uses deployment destination and detects association chan
     const send = calls.find(args => args[1] === "ask" && !args.includes("--help"));
     assert.equal(send[send.indexOf("--environment-id") + 1], target.environmentId);
     destination = "other-environment";
-    await chat.start("send", { query: "Next" });
+    await chat.start("check");
     assert.equal(chat.state.status, "changed");
+    await chat.start("send", { query: "Next" });
     assert.equal(calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 1);
     await assert.rejects(resolveTarget(selected, async () => json({ success: true, agents: [], deployments: [] })), /association/);
 });

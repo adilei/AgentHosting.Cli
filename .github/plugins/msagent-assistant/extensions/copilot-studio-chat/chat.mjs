@@ -203,13 +203,17 @@ export class Chat {
         }
     }
 
-    async preflight({ allowSignedOut = false, allowBlocked = false, checkCredentials = false } = {}) {
-        if (this.conversationIssue && !allowBlocked) throw new Error("Start a new chat to continue.");
-        if (this.requiresReset && !allowBlocked) {
+    guard() {
+        if (this.conversationIssue) throw new Error("Start a new chat to continue.");
+        if (this.requiresReset) {
             this.state.status = "uncertain";
             this.conversationIssue = "We couldn't confirm whether the agent received the last message. Start a new chat to continue.";
             throw new Error("The previous message may have been delivered. Check remote effects, then start a new conversation.");
         }
+    }
+
+    async preflight({ allowSignedOut = false, allowBlocked = false, checkCredentials = false } = {}) {
+        if (!allowBlocked) this.guard();
         await this.checkCapabilities();
         const resolved = await resolveTarget(this.target, args => this.command(args));
         if (this.resolved && stableJson(this.resolved) !== stableJson(resolved)) {
@@ -315,7 +319,8 @@ export class Chat {
             }
         }
         const live = operation === "send" || operation === "connect";
-        await this.preflight({ allowSignedOut: !live, allowBlocked: operation === "check",
+        if (operation === "send" && this.resolved) this.guard();
+        else await this.preflight({ allowSignedOut: !live, allowBlocked: operation === "check",
             checkCredentials: operation === "check" || operation === "connect" });
         if (!live) return;
         if (this.persist) {
@@ -380,9 +385,9 @@ export class Chat {
                 (this.conversationId && this.conversationId !== data.conversationId)) {
                 throw new Error("Invalid conversation outcome. Start a new conversation after checking remote effects.");
             }
-            await this.preflight();
             showReply(new ReplyStream(data.activities), false, false);
             this.conversationId = data.conversationId;
+            this.state.status = "ready";
         } catch (error) {
             if (error.data) this.debug.finish(error.data);
             if (error.data?.activities) showReply(new ReplyStream(error.data.activities), false, true);
