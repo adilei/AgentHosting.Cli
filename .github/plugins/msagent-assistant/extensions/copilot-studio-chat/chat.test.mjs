@@ -5,7 +5,7 @@ import { access, mkdtemp, readdir, readFile, realpath, rm, utimes, writeFile } f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
-import { Chat, ChatRegistry } from "./chat.mjs";
+import { Chat, ChatRegistry, openFailureGuidance } from "./chat.mjs";
 import { askArguments, parseResult, ReplyStream, resolveExecutable, resolveTarget, runCommand, validateConfiguredInput, validateTarget, visibleMessages } from "./client.mjs";
 import { ActivityReader } from "./activity-reader.mjs";
 import { renderMarkdown } from "./markdown.mjs";
@@ -2109,7 +2109,8 @@ test("displayed CLI credential guidance redacts secret-like values", () => {
 test("opening fails with the CLI's own error when signed-in credentials cannot be used", async () => {
     const { chat, calls } = fixture(args => args[0] === "env" ? json({ success: false, exitCode: 1, errorCode: 12006,
         errorMessage: "Owned protected storage is unavailable.", remediation: "Check native storage." }, 1) : undefined);
-    await assert.rejects(chat.verifyOpen(), error => error.message === "Owned protected storage is unavailable. Check native storage. (12006)");
+    await assert.rejects(chat.verifyOpen(), error =>
+        error.message === `Owned protected storage is unavailable. Check native storage. (12006) ${openFailureGuidance}`);
     assert(calls.some(args => args.join(" ") === "env list --json --non-interactive"));
     assert(!calls.some(args => args[1] === "ask" && !args.includes("--help")));
     assert(!calls.some(args => args[0] === "auth" && ["login", "create"].includes(args[1])));

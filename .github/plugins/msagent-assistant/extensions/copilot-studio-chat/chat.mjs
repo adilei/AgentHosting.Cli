@@ -86,6 +86,12 @@ export class ChatRegistry {
     }
 }
 
+export const openFailureGuidance = "The chat canvas was not opened and no message was sent. " +
+    "Tell the user the cause and the CLI's steps to fix it, in full, as numbered steps. " +
+    "Offer to help: you may run read-only checks such as `msagent auth status --json --non-interactive` and " +
+    "`msagent env list --json --non-interactive`. Ask before running `msagent auth create`, selecting an environment, " +
+    "or changing Keychain or credential items. Once it is fixed, open the canvas again with the same target.";
+
 export class Chat {
     constructor(executable, target, runner = runCommand) {
         this.executable = executable;
@@ -190,9 +196,11 @@ export class Chat {
     async verifyOpen() {
         await this.start("check");
         if (this.state.status === "authentication-required" && !this.state.error) {
-            throw new Error("The msagent CLI is signed out. Run `msagent auth create`, then open the canvas again.");
+            throw new Error(`The msagent CLI is signed out. ${openFailureGuidance}`);
         }
-        if (this.state.status !== "ready") throw new Error(this.state.error ?? "The chat target could not be checked.");
+        if (this.state.status !== "ready") {
+            throw new Error(`${this.state.error ?? "The chat target could not be checked."} ${openFailureGuidance}`);
+        }
     }
 
     async preflight({ allowSignedOut = false, allowBlocked = false, checkCredentials = false } = {}) {

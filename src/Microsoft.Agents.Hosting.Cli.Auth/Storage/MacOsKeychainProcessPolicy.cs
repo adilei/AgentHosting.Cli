@@ -76,9 +76,19 @@ public sealed class MacOsKeychainProcessPolicy
         }
     }
 
+    internal const int AuthFailed = -25293;
+
+    internal const string UntrustedBuildRemediation =
+        "macOS Keychain refused this msagent build. This usually follows installing or updating msagent, because its Keychain items " +
+        "still trust the previous build. In Keychain Access, open the msagent items (service agenthost_cli_csharp_service or " +
+        "com.microsoft.msagent.owned.v1.*) and, under Access Control, add the file printed by `readlink -f \"$(command -v msagent)\"`. " +
+        "Or delete only those items and run `msagent auth create`.";
+
     internal static void Check(int status)
     {
-        if (status != 0) throw Protection.Failure("macOS", $"native-status-{status}");
+        if (status != 0)
+            throw Protection.Failure("macOS", $"native-status-{status}",
+                remediation: status == AuthFailed ? UntrustedBuildRemediation : null);
     }
 }
 
