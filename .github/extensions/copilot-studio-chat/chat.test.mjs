@@ -900,6 +900,22 @@ test("Debug lazily collapses streaming runs while keeping final replies and othe
     assert.equal(groups()[0].children[0].textContent, "Streaming chunks (3)");
     assert(get("debug-output").textContent.includes("new streamed chunk"));
     assert.equal(groups()[1].open, false);
+
+    const expand = get("debug-expand");
+    assert.equal(expand.disabled, false);
+    assert.equal(expand.textContent, "Expand chunks");
+    await expand.events.click();
+    assert(groups().every(group => group.open));
+    assert.equal(expand.textContent, "Collapse chunks");
+    assert.equal(expand.ariaPressed, "true");
+    debug.responses[0].payload.activities.push(streamed("later chunk", 9), streamed("Later reply", 10, "final"));
+    debug.revision = ++state.debugRevision;
+    await refresh();
+    assert.equal(groups().length, 3);
+    assert(groups().every(group => group.open));
+    await expand.events.click();
+    assert(groups().every(group => !group.open));
+    assert.equal(expand.textContent, "Expand chunks");
     assert(calls.every(route => route === "/state" || route === "/debug"));
 });
 

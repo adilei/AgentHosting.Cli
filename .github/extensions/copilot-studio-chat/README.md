@@ -196,7 +196,9 @@ The debug view includes the current transcript and responses from conversation s
 subsequent sends. Each response shows activities as they arrive, including
 informative/tool events omitted from chat, followed by the final CLI JSON envelope.
 Consecutive streaming chunks are collapsed behind **Streaming chunks (N)**.
-Use the **+** or **−** in the left gutter to expand or collapse a group, which renders its recorded chunks in their original order; final
+Use the **+** or **−** in the left gutter to expand or collapse one group, or
+**Expand chunks** / **Collapse chunks** beside the search box for all groups,
+including groups that arrive later. Expanded groups render their recorded chunks in their original order; final
 messages and other events remain visible. Collapsing does not discard data or
 change the existing retention limit.
 It shows only what `ask` emits; hidden reasoning or tool

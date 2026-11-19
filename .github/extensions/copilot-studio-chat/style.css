@@ -77,11 +77,12 @@ textarea { display: block; width: 100%; padding: 8px; resize: vertical; max-heig
 .debug-selected { background: var(--true-color-blue-muted, #ddf4ff); outline: 2px solid var(--color-focus-outline, #0969da); outline-offset: 2px; border-radius: 3px; }
 .debug-entry { display: block; scroll-margin-top: 12px; }
 .debug-break { display: none; }
-.debug-stream > summary { position: relative; list-style: none; cursor: pointer; padding-inline-start: 10ch; color: var(--text-color-muted, #59636e); }
+.debug-stream > summary { position: relative; list-style: none; cursor: pointer; margin-inline-start: 10ch; width: fit-content; padding: 0 8px; border: 1px dashed var(--border-color-default, #d1d9e0); border-radius: 999px; background: var(--background-color-default, #fff); color: var(--text-color-default, #1f2328); }
+.debug-stream > summary:hover { border-style: solid; border-color: var(--color-focus-outline, #0969da); }
 .debug-stream > summary::-webkit-details-marker { display: none; }
-.debug-stream > summary::before { content: "+"; position: absolute; top: 0; left: -3ch; width: 2ch; font-size: 12px; line-height: 1.5; text-align: center; color: var(--text-color-muted, #59636e); border-radius: 3px; }
-.debug-stream[open] > summary { height: 0; font-size: 0; }
-.debug-stream[open] > summary::before { content: "\2212"; }
+.debug-stream > summary::before { content: "+"; position: absolute; top: 0; left: calc(-13ch - 1px); width: 2ch; font-size: 12px; line-height: 1.5; text-align: center; color: var(--text-color-muted, #59636e); border-radius: 3px; }
+.debug-stream[open] > summary { height: 0; padding: 0; border: 0; font-size: 0; }
+.debug-stream[open] > summary::before { content: "\2212"; left: -13ch; }
 .debug-stream > summary:hover::before { color: var(--text-color-default, #1f2328); background: var(--true-color-blue-muted, #ddf4ff); }
 .composer-input { border: 1px solid var(--border-color-default, #d1d9e0); border-radius: 6px; }
 .composer-input:has(textarea:focus-visible) { outline: 2px solid var(--color-focus-outline, #0969da); outline-offset: 2px; }
