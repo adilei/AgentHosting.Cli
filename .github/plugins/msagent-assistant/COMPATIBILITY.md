@@ -12,9 +12,14 @@ the CLI repository's auto-discovered `.github/skills` or `.github/agents`.
 |---|---|---|
 | Claude Code | Canonical `.claude-plugin/plugin.json` package | Documented format; native execution unverified |
 | GitHub Copilot CLI | Same Claude-compatible package | Documented legacy format; native execution unverified |
+| GitHub Copilot app | Same package; the manifest's legacy `extensions` path adds the chat canvas extension | Documented plugin-extension scope; canvas loading verified locally from an installed plugin |
 | Gemini CLI | Generated native extension, TOML commands and local agents | Documented format plus offline generation checks; native execution unverified |
 | Agency Copilot | Generated self-contained marketplace directory with `agency.json` | Documented format plus offline generation checks; onboarding and execution unverified |
 | M365 Cowork | Deferred | No independently usable subset established under the documented execution constraints |
+
+The `extensions/` directory is Copilot app-specific: generated Gemini and Agency packages omit it
+and drop the manifest field, whose meaning differs in Agent Plugins 1.0. Other hosts
+may report or ignore the field.
 
 No tested minimum host versions or runtime parity are claimed. Node.js >=22 is
 the declared helper prerequisite. MSAGENT is acquired separately through the

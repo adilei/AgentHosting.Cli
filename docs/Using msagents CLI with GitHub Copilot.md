@@ -11,8 +11,8 @@ You can provide optional compatible skills and an agent.md file to assist your c
 
 ## In-app chat canvas
 
-This repository includes an optional
-[Copilot Studio chat canvas](../.github/extensions/copilot-studio-chat/README.md)
+The `msagent-assistant` plugin includes an optional
+[Copilot Studio chat canvas](../.github/plugins/msagent-assistant/extensions/copilot-studio-chat/README.md)
 for GitHub Copilot app hosts supporting extension canvases. It runs `test ask`
 in the background and keeps chat inside the app, with progressive reply updates
 and safe Markdown formatting. Update granularity depends on activities emitted

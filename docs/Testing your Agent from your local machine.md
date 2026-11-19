@@ -6,8 +6,9 @@ Use `msagent test ask` for terminal queries or `msagent test playground` for an
 interactive UI. Testing is available without a feature-flag opt-in. The agent
 runs in Copilot Studio; the CLI and Playground are clients, not local emulators.
 
-For an in-app text pane in GitHub Copilot, the optional repository
-[chat canvas](../.github/extensions/copilot-studio-chat/README.md) wraps `test ask`
+For an in-app text pane in GitHub Copilot, the optional
+[chat canvas](../.github/plugins/msagent-assistant/extensions/copilot-studio-chat/README.md)
+in the `msagent-assistant` plugin wraps `test ask`
 without a separate chat browser or terminal. It reuses the CLI sign-in from
 `msagent auth create`; cards are not interactive in this renderer.
 

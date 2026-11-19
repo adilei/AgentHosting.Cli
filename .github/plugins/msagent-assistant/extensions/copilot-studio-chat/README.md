@@ -1,6 +1,6 @@
 # Copilot Studio chat canvas
 
-A project-scoped GitHub Copilot app canvas backed by `msagent test ask --json`.
+A GitHub Copilot app canvas, contributed by the `msagent-assistant` plugin, backed by `msagent test ask --json`.
 It does not embed Playground or start a separate chat browser/terminal.
 
 ## Requirements
@@ -19,7 +19,8 @@ flags, create app registrations, deploy agents, or publish anything.
 
 ## Open
 
-The runtime discovers this directory in a trusted repository. Reload extensions
+The app loads this extension from the installed `msagent-assistant` plugin, which
+declares `"extensions": "extensions/"`. Reinstall the plugin and reload extensions
 after changes. Opening **Copilot Studio chat** from the canvas menu without
 input shows a setup screen; it does not check credentials, run the CLI, or
 start a live conversation. **Choose an agent with Copilot** sends a request to
@@ -267,7 +268,7 @@ Closing the pane stops owned children and closes the listener.
 No npm dependencies or build step are needed:
 
 ```text
-node --test .github/extensions/copilot-studio-chat/chat.test.mjs
+npm --prefix .github/plugins/msagent-assistant/scripts test
 ```
 
 Tests use fake CLI results and local Node subprocesses, not cached credentials
