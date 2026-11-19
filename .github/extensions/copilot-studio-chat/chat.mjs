@@ -17,7 +17,9 @@ export class ChatRegistry {
     async open(instanceId, input, context = {}) {
         const closing = this.closing.get(instanceId);
         if (closing) await closing;
-        const key = JSON.stringify({ ...input, agentName: undefined });
+        const key = JSON.stringify({ ...input, agentName: undefined },
+            (name, value) => value && typeof value === "object" && !Array.isArray(value)
+                ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value);
         let entry = this.panels.get(instanceId);
         if (entry && entry.key !== key) throw new Error("Use a new panel when changing chats.");
         if (!entry) {

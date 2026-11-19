@@ -1510,6 +1510,7 @@ test("panels with the same chat ID keep their conversations independent", async 
     assert.equal(fixtures[0].calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 2);
     assert.equal(fixtures[1].calls.filter(args => args[1] === "ask" && !args.includes("--help")).length, 2);
     assert.equal(await registry.open("one", { ...input, agentName: "Test agent" }), one);
+    assert.equal(await registry.open("one", { target: Object.fromEntries(Object.entries(input.target).reverse()), chatId: input.chatId }), one);
     assert.equal(one.chat.snapshot().agentName, "Test agent");
     assert.equal(two.chat.snapshot().agentName, undefined);
     const three = await registry.open("three", { ...input, target: { ...target, schemaName: "other" } });
