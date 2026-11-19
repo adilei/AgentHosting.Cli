@@ -865,8 +865,8 @@ test("Debug lazily collapses streaming runs while keeping final replies and othe
     const [first, second] = groups();
     assert.equal(groups().length, 2);
     assert.equal(first.open, false);
-    assert.equal(first.children[0].textContent, "Streaming chunks (2)");
-    assert.equal(second.children[0].textContent, "Streaming chunks (1)");
+    assert.equal(first.children[0].textContent, "2 streaming chunks hidden");
+    assert.equal(second.children[0].textContent, "1 streaming chunk hidden");
     assert(!get("debug-output").textContent.includes("hidden chunk"));
     for (const text of ["Final reply", "ToolInvocation", "Other reply", "Informative event", "Malformed stream metadata"]) {
         assert(get("debug-output").textContent.includes(text));
@@ -897,12 +897,15 @@ test("Debug lazily collapses streaming runs while keeping final replies and othe
     debug.revision = ++state.debugRevision;
     await refresh();
     assert.equal(groups()[0].open, true);
-    assert.equal(groups()[0].children[0].textContent, "Streaming chunks (3)");
+    assert.equal(groups()[0].children[0].textContent, "3 streaming chunks hidden");
     assert(get("debug-output").textContent.includes("new streamed chunk"));
     assert.equal(groups()[1].open, false);
 
     const expand = get("debug-expand");
     assert.equal(expand.disabled, false);
+    assert.equal(expand.textContent, "Collapse chunks");
+    await expand.events.click();
+    assert(groups().every(group => !group.open));
     assert.equal(expand.textContent, "Expand chunks");
     await expand.events.click();
     assert(groups().every(group => group.open));
@@ -930,7 +933,7 @@ test("collapsed Debug keeps a large stream out of the rendered document until ex
     await get("view-debug").events.click();
     const output = get("debug-output");
     const group = descendants(output).find(node => node.tagName === "details");
-    assert.equal(group.children[0].textContent, "Streaming chunks (1200)");
+    assert.equal(group.children[0].textContent, "1200 streaming chunks hidden");
     assert(output.textContent.length < 2000);
     assert(descendants(output).length < 100);
     group.open = true;
@@ -982,7 +985,21 @@ test("Debug search finds and reveals collapsed streaming chunks without renderin
     assert.equal(marks().length, 1);
     search.events.keydown({ key: "Escape", preventDefault() {} });
     assert.equal(marks().length, 0);
+    assert.equal(group.open, false);
     assert.deepEqual(JSON.parse(debugJsonText(get("debug-output"))).responses, debug.responses);
+
+    search.value = "needle";
+    search.events.input();
+    assert.equal(group.open, true);
+    search.value = "Final reply";
+    search.events.input();
+    assert.equal(group.open, false);
+    search.value = "needle";
+    search.events.input();
+    await get("debug-expand").events.click();
+    assert.equal(group.open, false);
+    group.events.toggle();
+    assert.equal(group.open, false);
     assert(calls.every(route => route === "/state" || route === "/debug"));
 });
 

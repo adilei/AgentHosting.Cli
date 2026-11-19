@@ -16,6 +16,7 @@ let debugSelection;
 let debugTargets = new Map();
 let debugStreams = new Map();
 let debugExpandChunks = false;
+let debugRevealedKey;
 let debugSegments = [];
 let debugText = "";
 let debugMarkedSegments = [];
@@ -81,6 +82,7 @@ function searchDebug({ reset = false, direction = 0, scroll = false } = {}) {
         segment.node.textContent = !segment.details || segment.details.open ? segment.text : "";
     }
     debugMarkedSegments = [];
+    const revealed = debugStreams.get(debugRevealedKey);
     if (reset) debugMatchIndex = 0;
     else if (direction && debugMatchCount) {
         debugMatchIndex = (debugMatchIndex + direction + debugMatchCount) % debugMatchCount;
@@ -109,7 +111,14 @@ function searchDebug({ reset = false, direction = 0, scroll = false } = {}) {
     element("debug-search-count").textContent = !query ? "" : count ? `${debugMatchIndex + 1} of ${count}` : "No matches";
     element("debug-previous").disabled = !count;
     element("debug-next").disabled = !count;
-    if (!selected) return;
+    const release = () => {
+        debugRevealedKey = undefined;
+        if (revealed?.open && !debugExpandChunks) revealed.open = false;
+    };
+    if (!selected) {
+        if (!query) release();
+        return;
+    }
 
     let first;
     for (const segment of debugSegments) {
@@ -118,8 +127,10 @@ function searchDebug({ reset = false, direction = 0, scroll = false } = {}) {
         if (start >= end) continue;
         if (segment.details && !segment.details.open) {
             if (!scroll) continue;
+            if (revealed !== segment.details) release();
             segment.details.open = true;
-        }
+            debugRevealedKey = [...debugStreams].find(([, details]) => details === segment.details)?.[0];
+        } else if (scroll && segment.details !== revealed) release();
         const mark = document.createElement("mark");
         mark.className = "debug-search-match";
         mark.textContent = segment.text.slice(start, end);
@@ -132,9 +143,10 @@ function searchDebug({ reset = false, direction = 0, scroll = false } = {}) {
 
 function updateExpandChunks() {
     const button = element("debug-expand");
+    const expanded = [...debugStreams.values()].some(details => details.open);
     button.disabled = debugStreams.size === 0;
-    button.textContent = debugExpandChunks ? "Collapse chunks" : "Expand chunks";
-    button.ariaPressed = String(debugExpandChunks);
+    button.textContent = expanded ? "Collapse chunks" : "Expand chunks";
+    button.ariaPressed = String(expanded);
 }
 
 function renderDebug(debug) {
@@ -202,7 +214,9 @@ function renderDebug(debug) {
                             details.className = "debug-stream";
                             details.open = previousStreams.get(key)?.open ?? debugExpandChunks;
                             const summary = document.createElement("summary");
-                            summary.textContent = `Streaming chunks (${end - first})`;
+                            summary.textContent = `${end - first} streaming ${end - first === 1 ? "chunk" : "chunks"} hidden`;
+                            summary.tabIndex = -1;
+                            summary.addEventListener("click", event => event.preventDefault());
                             details.append(summary);
                             node.append(details);
                             debugStreams.set(key, details);
@@ -212,6 +226,7 @@ function renderDebug(debug) {
                             details.addEventListener("toggle", () => {
                                 if (debugStreams.get(key) !== details) return;
                                 content.textContent = details.open ? text : "";
+                                updateExpandChunks();
                                 searchDebug();
                             });
                             afterGroup = true;
@@ -508,11 +523,9 @@ element("debug-search").addEventListener("keydown", event => {
     }
 });
 element("debug-expand").addEventListener("click", () => {
-    debugExpandChunks = !debugExpandChunks;
-    for (const details of debugStreams.values()) {
-        if (details.open === debugExpandChunks) continue;
-        details.open = debugExpandChunks;
-    }
+    debugExpandChunks = ![...debugStreams.values()].some(details => details.open);
+    debugRevealedKey = undefined;
+    for (const details of debugStreams.values()) details.open = debugExpandChunks;
     updateExpandChunks();
 });
 element("debug-previous").addEventListener("click", () => searchDebug({ direction: -1, scroll: true }));

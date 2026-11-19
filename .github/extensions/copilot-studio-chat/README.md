@@ -181,8 +181,9 @@ and works during streaming; it never sends a message or restarts the conversatio
 Use **Find in debug data** to search the displayed JSON, ignoring case. The current
 match is highlighted; use **Previous** and **Next**, or Shift+Enter and Enter, to
 move through matches. Results update as the conversation data changes.
-Search includes collapsed streaming chunks and expands the group containing
-the selected match.
+Search includes hidden streaming chunks and temporarily reveals only the group
+containing the selected match. Moving to a match elsewhere, clearing the search,
+or **Collapse chunks** hides it again.
 
 Each bubble has an ellipsis menu with **View debug**. It switches views and
 highlights that turn's raw response for an agent bubble, or the input JSON for a
@@ -195,10 +196,10 @@ not select the previous message again.
 The debug view includes the current transcript and responses from conversation starts and
 subsequent sends. Each response shows activities as they arrive, including
 informative/tool events omitted from chat, followed by the final CLI JSON envelope.
-Consecutive streaming chunks are collapsed behind **Streaming chunks (N)**.
-Use the **+** or **−** in the left gutter to expand or collapse one group, or
-**Expand chunks** / **Collapse chunks** beside the search box for all groups,
-including groups that arrive later. Expanded groups render their recorded chunks in their original order; final
+Consecutive streaming chunks are hidden by default behind a single
+**N streaming chunks hidden** line. Use **Expand chunks** / **Collapse chunks**
+beside the search box to show or hide all groups, including groups that arrive
+later; the button offers Collapse whenever any chunks are visible. Expanded groups render their recorded chunks in their original order; final
 messages and other events remain visible. Collapsing does not discard data or
 change the existing retention limit.
 It shows only what `ask` emits; hidden reasoning or tool
