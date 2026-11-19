@@ -100,8 +100,9 @@ file permissions where supported). When the extension or app restarts, the
 runtime reopens existing canvases and each resumes its own conversation with `--conversation-id`
 without a live call. If the CLI account or resolved target changed, or the last
 turn's outcome was uncertain, the canvas shows the saved transcript with a
-single recovery card explaining why the chat can't continue. The composer is
-disabled until **Start new chat**; no message is replayed.
+single recovery card with its own **Start new chat** button; a changed target
+is reported only as "Something went wrong." The header **New chat** button stays
+available. The composer is disabled until a new chat starts; no message is replayed.
 Before contacting the agent, the canvas saves an uncertain-turn marker so an
 interrupted process cannot restore the previous conversation as if the turn had
 not happened. If that safety record cannot be saved, the agent is not contacted;

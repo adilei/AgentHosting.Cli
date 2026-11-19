@@ -311,7 +311,7 @@ function controls() {
     element("query").placeholder = conversationBlocked ? "Start a new chat to send a message." : "Ask your agent…";
     element("send").disabled = busy || conversationBlocked || !canConnect || !state?.connected || !element("query").value.trim();
     element("new-chat").disabled = busy;
-    element("new-chat").hidden = setup || (conversationBlocked && !debugView);
+    element("new-chat").hidden = setup;
     element("start-new-chat").disabled = busy;
     element("start-new-chat").hidden = !conversationBlocked;
     element("conversation-issue").hidden = !conversationBlocked || debugView;

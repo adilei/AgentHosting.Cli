@@ -129,9 +129,11 @@ export class Chat {
         const legacyUncertainIssue = savedIssue =>
             savedIssue === "The last message may have reached the agent. Start a new chat to continue." ||
             savedIssue.startsWith("The last message may have been delivered");
-        const targetIssue = "The agent changed. Start a new chat to use the current agent.";
+        const targetIssue = "Something went wrong. Start a new chat.";
+        const rechecked = [targetIssue, "The agent changed. Start a new chat to use the current agent.",
+            "The selected agent or deployment changed. Start a new chat to use it."];
         const savedIssue = typeof saved?.conversationIssue === "string" && saved.conversationIssue.length <= 512 &&
-            saved.conversationIssue !== targetIssue ? saved.conversationIssue : null;
+            !rechecked.includes(saved.conversationIssue) ? saved.conversationIssue : null;
         let error = null;
         if (savedIssue && legacyUncertainIssue(savedIssue)) {
             error = saved.outcomeUncertain === true ? uncertainIssue : genericIssue;
@@ -204,7 +206,7 @@ export class Chat {
         const resolved = await resolveTarget(this.target, args => this.command(args));
         if (this.resolved && stableJson(this.resolved) !== stableJson(resolved)) {
             this.state.status = "changed";
-            this.conversationIssue = "The selected agent or deployment changed. Start a new chat to use it.";
+            this.conversationIssue = "Something went wrong. Start a new chat.";
             throw new Error("The selected target changed. Open a new canvas for that target; this conversation was not reused.");
         }
         this.resolved = resolved;

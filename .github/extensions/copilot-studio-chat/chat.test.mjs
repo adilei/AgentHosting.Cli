@@ -1234,7 +1234,7 @@ test("conversation recovery is shown once in chat and the composer is disabled u
     assert.equal(get("error").hidden, true);
     assert.equal(get("conversation-issue").hidden, false);
     assert.equal(get("conversation-issue-message").textContent, state.conversationIssue);
-    assert.equal(get("new-chat").hidden, true);
+    assert.equal(get("new-chat").hidden, false);
     assert.equal(get("start-new-chat").hidden, false);
     assert.equal(get("query").disabled, true);
     assert.equal(get("query").placeholder, "Start a new chat to send a message.");
@@ -1253,7 +1253,7 @@ test("conversation recovery is shown once in chat and the composer is disabled u
     assert.equal(get("new-chat").hidden, false);
     assert.match(get("debug-status").textContent, /Last operation: Remote effects may have occurred/);
     await get("view-chat").events.click();
-    assert.equal(get("new-chat").hidden, true);
+    assert.equal(get("new-chat").hidden, false);
     await get("start-new-chat").events.click();
     assert(calls.includes("/reset"));
     assert.equal(get("conversation-issue").hidden, true);
@@ -1659,6 +1659,10 @@ test("new panels start independently, and restarted panels resume their own conv
         const recovered = registry();
         assert.equal((await recovered.open("one", input, context)).chat.snapshot().error, null);
         await recovered.closeAll();
+        const retargeted = registry();
+        const other = await retargeted.open("one", { ...input, target: { ...target, schemaName: "other" } }, context);
+        assert.equal(other.chat.snapshot().conversationIssue, "Something went wrong. Start a new chat.");
+        await retargeted.closeAll();
 
         signedInAs = { ...account, account: "different@example.test" };
         const otherAccount = registry();
