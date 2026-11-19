@@ -91,7 +91,9 @@ The canvas reuses the CLI's account; it does not handle Entra tokens or run
 Sign in with `msagent auth create`; the canvas checks when it opens and when
 starting a new chat, and rechecks on focus only while it shows an error. Sending
 runs only `test ask`, so the message appears at once; a sign-in failure is
-reported from that call. CLI
+reported from that call. Sending does not recheck the CLI account, so switching
+`msagent` accounts during a conversation is not supported; start a new chat
+after switching. CLI
 authentication is unchanged.
 
 Once the checks pass, opening a new canvas automatically starts a live
