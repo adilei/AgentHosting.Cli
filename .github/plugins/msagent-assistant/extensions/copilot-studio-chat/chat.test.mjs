@@ -526,6 +526,32 @@ async function uiFixture(state, respond = () => undefined) {
         click(target) { return documentEvents.click({ target }); } };
 }
 
+test("unreachable chat updates tell the user to reconnect without browser error details", async () => {
+    const { get, calls } = await uiFixture({}, () => { throw new Error("Load failed"); });
+    assert.equal(get("error").textContent,
+        "The canvas could not reach its local chat service. Reopen this canvas to reconnect.");
+    for (const id of ["send", "new-chat", "start-new-chat", "choose-agent"]) assert.equal(get(id).disabled, true);
+    assert.deepEqual(calls, ["/state"]);
+});
+
+test("chat service errors retain their details when updates fail", async () => {
+    const { get } = await uiFixture({}, route => route === "/state"
+        ? { ok: false, json: async () => ({ error: "Chat state expired." }) }
+        : undefined);
+    assert.equal(get("error").textContent,
+        "This canvas could not load chat updates. Reopen this canvas to reconnect.\nDetails: Chat state expired.");
+});
+
+test("an unreachable service shows reconnect guidance when an action fails", async () => {
+    const state = { status: "ready", busy: false, target, error: null, messages: [] };
+    const { get } = await uiFixture(state, route => {
+        if (route === "/reset") throw new Error("Load failed");
+    });
+    await get("new-chat").events.click();
+    assert.equal(get("error").textContent,
+        "The canvas could not reach its local chat service. Reopen this canvas to reconnect.");
+});
+
 test("message ellipses jump to the matching raw response or input even for repeated text and pruned response history", async () => {
     const state = { status: "ready", busy: false, target, error: null, debugRevision: 1, messages: [
         { role: "assistant", turnId: 1, text: "Same text" }, { role: "user", turnId: 2, text: "Same text" },

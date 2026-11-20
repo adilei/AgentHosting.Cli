@@ -270,15 +270,22 @@ function renderDebug(debug) {
 }
 
 async function api(route, input) {
-    const response = await fetch(route, {
-        method: input === undefined ? "GET" : "POST",
-        headers: { Authorization: `Bearer ${capability}`, ...(input === undefined ? {} : { "Content-Type": "application/json" }) },
-        ...(input === undefined ? {} : { body: JSON.stringify(input) }),
-    });
+    let response;
+    try {
+        response = await fetch(route, {
+            method: input === undefined ? "GET" : "POST",
+            headers: { Authorization: `Bearer ${capability}`, ...(input === undefined ? {} : { "Content-Type": "application/json" }) },
+            ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+        });
+    } catch {
+        throw new LocalServiceUnavailableError("The canvas could not reach its local chat service. Reopen this canvas to reconnect.");
+    }
     const data = await response.json();
     if (!response.ok) throw new Error(data.error ?? "The local chat service failed.");
     return data;
 }
+
+class LocalServiceUnavailableError extends Error {}
 
 function showError(message) {
     element("error").textContent = message ?? "";
@@ -430,7 +437,11 @@ async function refresh() {
         stopped = true;
         finishDraft(true);
         element("typing").hidden = true;
-        showError(`${error.message} Reopen the canvas if its backend stopped. No message will be replayed.`);
+        const message = error instanceof LocalServiceUnavailableError
+            ? error.message
+            : "This canvas could not load chat updates. Reopen this canvas to reconnect.";
+        const details = error instanceof LocalServiceUnavailableError ? "" : `\nDetails: ${error.message}`;
+        showError(`${message}${details}`);
         for (const id of ["send", "new-chat", "start-new-chat", "choose-agent"]) element(id).disabled = true;
     }
 }
